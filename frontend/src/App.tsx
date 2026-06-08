@@ -37,12 +37,24 @@ export function App() {
   const [showSettings, setShowSettings] = useState(false);
   const pollRef = useRef<number | null>(null);
 
-  // ---- create / new ----
-  const createProject = useCallback(async (prompt: string, requirements: string, goals: string) => {
+  // One-shot: a plain-language request is enough. Create the project, wait for
+  // scaffold, then auto-generate the whole video from the same sentence — no
+  // code knowledge or extra fields needed (the skill carries the how-to).
+  const describeAndMake = useCallback(async (request: string) => {
     setBusy(true);
     try {
-      const p = await api.createProject({ prompt, requirements, goals });
+      const p = await api.createProject({ prompt: request, requirements: "", goals: request });
       setProject(p);
+      // poll until the sandbox is scaffolded, then kick off generation
+      for (let i = 0; i < 30; i++) {
+        const cur = await api.getProject(p.id);
+        if (cur.state === "ready") {
+          await api.generate(p.id, { concept: request });
+          break;
+        }
+        if (cur.state === "failed") break;
+        await new Promise((r) => setTimeout(r, 2000));
+      }
     } finally {
       setBusy(false);
     }
@@ -139,7 +151,7 @@ export function App() {
     }
   }, [project]);
 
-  if (!project) return <Welcome onCreate={createProject} busy={busy} />;
+  if (!project) return <Welcome onMake={describeAndMake} busy={busy} />;
 
   return (
     <div className="app">
@@ -241,23 +253,27 @@ export function App() {
   );
 }
 
-function Welcome({ onCreate, busy }: { onCreate: (p: string, r: string, g: string) => void; busy: boolean }) {
-  const [prompt, setPrompt] = useState("Linear regression explainer");
-  const [requirements, setRequirements] = useState("beginner-friendly, animated scatter + fitted line");
-  const [goals, setGoals] = useState("teach fitting a line to data");
+function Welcome({ onMake, busy }: { onMake: (request: string) => void; busy: boolean }) {
+  const [request, setRequest] = useState("");
+  const example = "Làm cho tôi một video hướng dẫn cơ bản về linear regression, mọi thứ được diễn giải rõ ràng từ công thức đến hình ảnh";
   return (
     <div className="welcome">
       <h1>OptimAIze-VideoMaker</h1>
-      <p className="muted">Create a Remotion video project. Edit code, preview live, and steer it by chat. The LLM can author a complete educational video from a single concept.</p>
-      <label>Title / prompt</label>
-      <input value={prompt} onChange={(e) => setPrompt(e.target.value)} />
-      <label>Requirements</label>
-      <input value={requirements} onChange={(e) => setRequirements(e.target.value)} />
-      <label>Goals</label>
-      <input value={goals} onChange={(e) => setGoals(e.target.value)} />
-      <button onClick={() => onCreate(prompt, requirements, goals)} disabled={busy}>
-        {busy ? "Creating…" : "Create project"}
-      </button>
+      <p className="muted">Mô tả video bạn muốn bằng một câu. AI sẽ tự lên kịch bản, viết và dựng video — bạn không cần biết code.</p>
+      <textarea
+        rows={4}
+        value={request}
+        placeholder={example}
+        onChange={(e) => setRequest(e.target.value)}
+      />
+      <div className="row" style={{ marginTop: 12, gap: 8 }}>
+        <button onClick={() => onMake(request.trim() || example)} disabled={busy}>
+          {busy ? "Đang tạo…" : "Tạo video"}
+        </button>
+        <button className="secondary" onClick={() => setRequest(example)} disabled={busy}>
+          Dùng ví dụ
+        </button>
+      </div>
     </div>
   );
 }

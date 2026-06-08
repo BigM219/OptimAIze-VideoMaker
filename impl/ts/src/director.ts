@@ -5,6 +5,7 @@
 import { OpenRouterClient } from "./agent/llm-client.js";
 import { skillCore, skillRulesFor } from "./skills.js";
 import type { ProjectStore, Storyboard, Scene } from "./projects.js";
+import type { ExecResult } from "./types.js";
 
 function extractJson(text: string): string | null {
   const parts = text.split("```");
@@ -20,29 +21,32 @@ function extractJson(text: string): string | null {
   return null;
 }
 
-const STORYBOARD_SYSTEM = `You are a video director for educational explainer videos built with Remotion.
-Given a concept, produce a JSON storyboard. Reply with ONLY a fenced \`\`\`json block:
+// Append a progress step to a project (module-level so the repair loop and the
+// generate loop share one timeline the UI polls).
+function pushStep(p: { steps: Array<{ index: number; timestamp: number; phase: string; detail: string }>; updatedAt: number }, phase: string, detail: string): void {
+  p.steps.push({ index: p.steps.length, timestamp: Date.now() / 1000, phase, detail });
+  p.updatedAt = Date.now() / 1000;
+}
+
+const STORYBOARD_SYSTEM = `Plan an educational explainer video. Reply with ONLY a fenced \`\`\`json block in this shape:
 {
-  "title": "string",
-  "fps": 30,
-  "width": 1920,
-  "height": 1080,
+  "title": "string", "fps": 30, "width": 1920, "height": 1080,
   "scenes": [
-    {"id": "TitleScene", "title": "...", "durationInFrames": 90, "narration": "on-screen text / spoken line", "visual": "what animates"}
+    {"id": "TitleScene", "title": "...", "durationInFrames": 90, "narration": "on-screen / spoken line", "visual": "what animates"}
   ]
 }
-Rules: 4-6 scenes; ids are PascalCase + end with "Scene"; durations sum to roughly the requested length at the given fps; for a data/plot concept include a scene that animates the actual visual (e.g. scatter points appearing then a regression line being drawn).`;
+Scene ids are PascalCase ending in "Scene"; durations sum to roughly the requested length at the given fps.
+
+Follow this skill:
+${skillCore()}`;
 
 function sceneSystem(rules: string): string {
   const core = skillCore();
-  return `You write a single Remotion scene component in TypeScript. Reply with ONLY a fenced \`\`\`tsx block containing one file.
-Requirements:
-- Export a named React FC matching the scene id, e.g. "export const TitleScene: React.FC = () => {...}".
-- Use only "react" and "remotion" imports (AbsoluteFill, useCurrentFrame, useVideoConfig, interpolate, spring, Sequence).
-- Self-contained, no external assets, no audio. Animate with interpolate/spring driven by useCurrentFrame.
-- Fill the frame; large readable text; keep it visually consistent with an educational explainer.
+  // The domain knowledge (how to write good Remotion) lives in the skill, not
+  // here. Keep only the mechanical output contract the parser depends on.
+  return `Write one Remotion scene component in TypeScript. Reply with ONLY a fenced \`\`\`tsx block containing the single complete file. Export a named React FC whose name matches the scene id.
 
-You MUST follow these Remotion best practices (domain skill):
+Follow this skill:
 ${core}${rules ? `\n\nRelevant rules for this scene:${rules}` : ""}`;
 }
 
@@ -152,7 +156,7 @@ export async function generateConcept(
               `It is one of ${sb.scenes.length} scenes (${sb.scenes.map((s) => s.id).join(", ")}); keep the style consistent.`,
           },
         ],
-        { maxTokens: 2200, temperature: 0.3 },
+        { maxTokens: 4000, temperature: 0.3 },
       );
       const code = extractTsx(resp);
       store.writeFile(projectId, `src/scenes/${scene.id}.tsx`, code);
@@ -163,20 +167,21 @@ export async function generateConcept(
     store.writeFile(projectId, "src/Root.tsx", rootSource(sb));
     store.writeFile(projectId, "src/index.ts", indexSource());
 
-    // 4. Self-check render with up to 3 autonomous repair passes.
+    // 4. Self-check render, then an agentic repair loop: keep feeding the build
+    //    error back to the model (with full project + running history) and keep
+    //    fixing until it renders or we hit a hard ceiling — the way Claude /
+    //    Codex / Antigravity iterate on their own errors instead of giving up.
     const backend = store.manager().backendFor(p.sandboxId);
     p.state = "rendering";
     stepLog("render", "Rendering the assembled video");
     let render = await backend.exec(p.sandboxId, "npx --no-install remotion render Video out/video.mp4", { timeoutS: 1200 });
-    const MAX_REPAIRS = 3;
-    for (let attempt = 1; attempt <= MAX_REPAIRS && render.exitCode !== 0; attempt++) {
-      stepLog("repair", `Render failed (attempt ${attempt}/${MAX_REPAIRS}); asking the model to fix the failing file(s)`);
-      const edited = await repairOnce(store, projectId, client, render.stderr + "\n" + render.stdout);
-      if (edited.length === 0) {
-        stepLog("repair", "Model proposed no file changes; stopping repair.");
-        break;
-      }
-      render = await backend.exec(p.sandboxId, "npx --no-install remotion render Video out/video.mp4", { timeoutS: 1200 });
+
+    if (render.exitCode !== 0) {
+      const ok = await repairLoop(store, projectId, client, backend, () =>
+        backend.exec(p.sandboxId!, "npx --no-install remotion render Video out/video.mp4", { timeoutS: 1200 }),
+        render,
+      );
+      if (ok) render = ok;
     }
     if (render.exitCode !== 0) throw new Error(`render failed after repair: ${render.stderr.slice(0, 400)}`);
 
@@ -188,6 +193,74 @@ export async function generateConcept(
     p.error = String((e as Error).message ?? e);
     stepLog("error", p.error);
   }
+}
+
+// Agentic repair: a stateful conversation. The model sees the build error and
+// all source on each turn, rewrites files, we re-render, and feed the new error
+// back — repeating until the render passes, the model stops proposing changes
+// across consecutive turns, or a hard ceiling is reached. Returns the successful
+// ExecResult, or null if it never recovers.
+const MAX_REPAIR_TURNS = 8;
+async function repairLoop(
+  store: ProjectStore,
+  projectId: string,
+  client: OpenRouterClient,
+  _backend: unknown,
+  rerender: () => Promise<ExecResult>,
+  firstFail: ExecResult,
+): Promise<ExecResult | null> {
+  const p = store.get(projectId);
+  const messages: Array<{ role: string; content: string }> = [
+    {
+      role: "system",
+      content:
+        `You are a Remotion build-fixer working iteratively, like a coding agent. ` +
+        `Each turn you receive the latest build/render error and the full project source. ` +
+        `Diagnose the actual cause (often a truncated/unclosed file, a bad import, or a type error), ` +
+        `then reply with ONLY a fenced \`\`\`json block: {"files":[{"path":"src/...","content":"COMPLETE file content"}],"note":"what you changed"}. ` +
+        `Always return whole files, never fragments. If a file looks truncated, rewrite it complete.`,
+    },
+  ];
+  let lastErr = firstFail.stderr + "\n" + firstFail.stdout;
+  let noChangeStreak = 0;
+
+  for (let turn = 1; turn <= MAX_REPAIR_TURNS; turn++) {
+    pushStep(p, "repair", `Fixing render error (turn ${turn}/${MAX_REPAIR_TURNS})`);
+    const fileBlock = Object.entries(collect(store, projectId))
+      .map(([path, content]) => `// FILE: ${path}\n${content}`)
+      .join("\n\n");
+    messages.push({
+      role: "user",
+      content: `Build error:\n${lastErr.slice(0, 2000)}\n\nProject files:\n${fileBlock.slice(0, 16000)}`,
+    });
+    const resp = await client.chat(trimRepair(messages), { maxTokens: 3000, temperature: 0.2 });
+    messages.push({ role: "assistant", content: resp });
+    const edited = applyEdits(store, projectId, resp);
+    if (edited.length === 0) {
+      noChangeStreak += 1;
+      pushStep(p, "repair", "Model proposed no file changes this turn.");
+      if (noChangeStreak >= 2) {
+        pushStep(p, "repair", "No progress for 2 turns; stopping repair.");
+        return null;
+      }
+      continue;
+    }
+    noChangeStreak = 0;
+    const r = await rerender();
+    if (r.exitCode === 0) {
+      pushStep(p, "repair", `Fixed after ${turn} turn(s).`);
+      return r;
+    }
+    lastErr = r.stderr + "\n" + r.stdout;
+  }
+  return null;
+}
+
+// Keep the repair conversation bounded: system + the last few turns (each turn's
+// user message already carries the full latest source, so old turns are stale).
+function trimRepair(messages: Array<{ role: string; content: string }>): Array<{ role: string; content: string }> {
+  if (messages.length <= 5) return messages;
+  return [messages[0], ...messages.slice(-4)];
 }
 
 // One repair pass: give the model the build error + all source, let it rewrite
