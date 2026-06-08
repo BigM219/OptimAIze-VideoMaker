@@ -14,6 +14,7 @@ import { BashTool } from "./bash.js";
 import { GrepTool } from "./grep.js";
 import { GlobTool } from "./glob.js";
 import { InvalidTool } from "./invalid.js";
+import { typecheck, formatDiagnostics } from "./diagnostics.js";
 
 // Ordered list of built-in tools. Increment D appends domain tools.
 const BUILTIN: ToolDef<any>[] = [ReadTool, WriteTool, EditTool, ListFilesTool, BashTool, GrepTool, GlobTool];
@@ -73,6 +74,28 @@ export class ToolRegistry {
       const detail = String((e as Error).message ?? e);
       ctx.log("tool", `${call.tool}: failed — ${detail}`, { kind: "error" });
       return { tool: call.tool, ok: false, output: `Tool ${call.tool} failed: ${detail}` };
+    }
+  }
+
+  // True if the named tool mutates files (write/edit). The director uses this to
+  // decide whether a diagnostics pass is worth running after a turn.
+  isMutating(toolId: string): boolean {
+    return this.tools.get(toolId)?.mutating === true;
+  }
+
+  // Run one project type-check and append the errors to the matching mutating
+  // tool results, so the model sees compile errors in the same turn it edited —
+  // see docs/harness-design.md §8. Runs at most once per turn (tsc is costly),
+  // only when a mutating call actually succeeded. Mutates `results` in place.
+  async appendDiagnostics(results: ToolCallResult[], ctx: ToolContext): Promise<void> {
+    const mutated = results.filter((r) => r.ok && this.isMutating(r.tool));
+    if (mutated.length === 0) return;
+    const byFile = await typecheck(ctx);
+    if (byFile.size === 0) return;
+    for (const r of mutated) {
+      const edited = typeof r.metadata?.filePath === "string" ? r.metadata.filePath : "";
+      const text = formatDiagnostics(byFile, edited);
+      if (text) r.output += text;
     }
   }
 
