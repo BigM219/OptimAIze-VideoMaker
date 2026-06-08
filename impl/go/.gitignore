@@ -4,3 +4,4 @@ optimaize-videomaker.exe
 .env.*
 !.env.example
 *.log
+*.exe~
