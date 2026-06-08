@@ -32,13 +32,25 @@ func sceneSystem(rules string) string {
 	return s
 }
 
-func rootSource(sb *Storyboard) string {
-	var imports, series strings.Builder
+// rootSource builds Root.tsx registering ONE <Composition> per scene plus the
+// combined "Video" composition, so Remotion Studio lists every slide and renders
+// each directly from code (live, hot-reload). Only the scenes passed in are
+// imported/registered, so Studio hot-reloads cleanly as slides are written one
+// at a time — a scene whose file doesn't exist yet is simply absent.
+func rootSource(sb *Storyboard) string { return rootSourceFor(sb, sb.Scenes) }
+
+func rootSourceFor(sb *Storyboard, scenes []Scene) string {
+	var imports, series, perScene strings.Builder
 	total := 0
-	for _, sc := range sb.Scenes {
+	for _, sc := range scenes {
 		imports.WriteString(fmt.Sprintf("import {%s} from './scenes/%s';\n", sc.ID, sc.ID))
 		series.WriteString(fmt.Sprintf("      <Series.Sequence durationInFrames={%d}>\n        <%s />\n      </Series.Sequence>\n", sc.DurationInFrames, sc.ID))
+		perScene.WriteString(fmt.Sprintf("    <Composition id=\"%s\" component={%s} durationInFrames={%d} fps={%d} width={%d} height={%d} />\n", sc.ID, sc.ID, sc.DurationInFrames, sb.FPS, sb.Width, sb.Height))
 		total += sc.DurationInFrames
+	}
+	combined := ""
+	if len(scenes) > 0 {
+		combined = fmt.Sprintf("    <Composition id=\"Video\" component={Video} durationInFrames={%d} fps={%d} width={%d} height={%d} />\n", total, sb.FPS, sb.Width, sb.Height)
 	}
 	return fmt.Sprintf(`import React from 'react';
 import {Composition, Series} from 'remotion';
@@ -52,10 +64,11 @@ export const Video: React.FC = () => {
 
 export const RemotionRoot: React.FC = () => {
   return (
-    <Composition id="Video" component={Video} durationInFrames={%d} fps={%d} width={%d} height={%d} />
+    <>
+%s%s    </>
   );
 };
-`, imports.String(), series.String(), total, sb.FPS, sb.Width, sb.Height)
+`, imports.String(), series.String(), combined, perScene.String())
 }
 
 const indexSource = `import {registerRoot} from 'remotion';
@@ -97,6 +110,9 @@ func (s *Store) Generate(pid, concept, audience string, durationS int) {
 	if sb.Height == 0 {
 		sb.Height = 1080
 	}
+	for i := range sb.Scenes {
+		sb.Scenes[i].Status = "pending"
+	}
 	p.Storyboard = &sb
 	ids := make([]string, len(sb.Scenes))
 	for i, sc := range sb.Scenes {
@@ -106,8 +122,24 @@ func (s *Store) Generate(pid, concept, audience string, durationS int) {
 		Detail:  fmt.Sprintf("%s — %d scenes: %s", sb.Title, len(sb.Scenes), strings.Join(ids, ", ")),
 		Content: storyboardSummary(&sb)})
 
-	// 2. Author each scene.
-	for _, sc := range sb.Scenes {
+	// Studio renders every slide live from code, so launch it up front with an
+	// empty Root. As each scene is written we rewrite Root to register the
+	// scenes-so-far; Studio hot-reloads and the new slide appears.
+	_ = s.WriteFile(pid, "src/index.ts", indexSource)
+	_ = s.WriteFile(pid, "src/Root.tsx", rootSourceFor(&sb, nil))
+	if url, _, err := s.LaunchStudio(pid); err == nil {
+		s.stepRich(p, Step{Phase: "studio", Kind: "info", Detail: "Live Studio on " + url + " — slides appear as they're written."})
+	} else {
+		s.stepRich(p, Step{Phase: "studio", Kind: "info", Detail: "Studio launch deferred: " + err.Error()})
+	}
+
+	// 2. Author each scene. After writing each one, register the
+	//    scenes-written-so-far in Root so Studio hot-reloads and that slide
+	//    becomes reviewable live — no per-scene mp4, the slide IS the code.
+	for i := range sb.Scenes {
+		sc := &sb.Scenes[i]
+		sc.Status = "writing"
+		p.UpdatedAt = now()
 		rules := skills.RulesFor(sc.Title+" "+sc.Visual+" "+sc.Narration, 6000)
 		resp, err := client.Chat([]agent.ChatMessage{
 			{Role: "system", Content: sceneSystem(rules)},
@@ -122,12 +154,15 @@ func (s *Store) Generate(pid, concept, audience string, durationS int) {
 		_ = s.WriteFile(pid, "src/scenes/"+sc.ID+".tsx", code)
 		s.stepRich(p, Step{Phase: "scene", Kind: "write_file", Detail: "Wrote src/scenes/" + sc.ID + ".tsx",
 			Path: "src/scenes/" + sc.ID + ".tsx", Content: code})
+		// Register this slide in Studio (hot-reload shows it immediately).
+		_ = s.WriteFile(pid, "src/Root.tsx", rootSourceFor(&sb, sb.Scenes[:i+1]))
+		sc.Status = "ready"
+		p.UpdatedAt = now()
 	}
 
-	// 3. Assemble.
+	// 3. Final Root with every scene + the combined Video composition.
 	root := rootSource(&sb)
 	_ = s.WriteFile(pid, "src/Root.tsx", root)
-	_ = s.WriteFile(pid, "src/index.ts", indexSource)
 	s.stepRich(p, Step{Phase: "assemble", Kind: "write_file", Detail: "Wrote src/Root.tsx", Path: "src/Root.tsx", Content: root})
 
 	// 4. Render, then an agentic repair loop: keep feeding the build error back

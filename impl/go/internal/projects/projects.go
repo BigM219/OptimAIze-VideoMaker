@@ -22,6 +22,13 @@ type Scene struct {
 	DurationInFrames int    `json:"durationInFrames"`
 	Narration        string `json:"narration"`
 	Visual           string `json:"visual"`
+	// Per-scene lifecycle so the UI can review each slide live in Studio as soon
+	// as its code is written. Each scene is its own Remotion composition, so
+	// Studio renders it directly from code (hot-reload) — no per-scene mp4.
+	// "ready" = code written and registered in Studio; "error" = compile/repair
+	// pending without blocking the other slides.
+	Status      string `json:"status,omitempty"`      // pending|writing|ready|error
+	RenderError string `json:"render_error,omitempty"`
 }
 type Storyboard struct {
 	Title  string  `json:"title"`
