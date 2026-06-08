@@ -106,6 +106,7 @@ function indicesOf(content: string, match: string): number[] {
 
 export const EditTool: ToolDef<Args> = {
   id: "edit",
+  mutating: true,
   description:
     "Replace an exact string in a file (no full-file rewrite — saves tokens). oldString must match the file exactly (whitespace included); if it appears more than once, add surrounding context or set replaceAll. Read the file first to copy the exact text (omit the line-number prefix).",
   parameters: {

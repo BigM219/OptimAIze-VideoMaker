@@ -12,6 +12,7 @@ interface Args {
 
 export const WriteTool: ToolDef<Args> = {
   id: "write",
+  mutating: true,
   description:
     "Create or overwrite a project file with the given content. Path must be under src/, public/, or out/. Prefer `edit` for small changes to an existing file — write sends the whole file.",
   parameters: {
