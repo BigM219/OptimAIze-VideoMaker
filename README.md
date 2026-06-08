@@ -32,7 +32,7 @@ frontend/                # Vite + React + TS: 3-pane UI (editor | preview | chat
 impl/
   ts/                    # Node + Hono backend on port 8003 (reference impl)
   go/                    # Go backend (parity)
-.claude/skills/
+.optimaize/skills/
   video-skills/          # domain best-practices skill fed to the LLM
     SKILL.md             # always-on core guidance
     rules/*.md           # topic rules loaded on demand (text, charts, timing, ...)
@@ -50,7 +50,7 @@ impl/
 
 ## The video skill
 
-`.claude/skills/video-skills/` follows the `.claude` skills layout. `SKILL.md`
+`.optimaize/skills/video-skills/` follows the `.optimaize` skills layout. `SKILL.md`
 (the curated core) is injected into every authoring/editing prompt; the
 `rules/*.md` files are pulled in on demand per scene by keyword (e.g. a charting
 scene gets the chart rule). This gives the model domain knowledge without
