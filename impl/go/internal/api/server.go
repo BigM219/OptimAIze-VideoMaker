@@ -13,6 +13,7 @@ import (
 	"strconv"
 	"strings"
 
+	"optimaize-videomaker-go/internal/agent"
 	"optimaize-videomaker-go/internal/projects"
 	"optimaize-videomaker-go/internal/sandbox"
 	"optimaize-videomaker-go/internal/skills"
@@ -110,6 +111,17 @@ func (s *Server) route(w http.ResponseWriter, r *http.Request) {
 		} else {
 			writeJSON(w, 404, map[string]string{"detail": "rule not found"})
 		}
+	case p == "/api/v1/vm/models" && r.Method == "GET":
+		writeJSON(w, 200, map[string]any{"models": agent.GetModels()})
+	case p == "/api/v1/vm/models" && r.Method == "PUT":
+		var b struct {
+			Models []agent.ModelEntry `json:"models"`
+		}
+		if json.NewDecoder(r.Body).Decode(&b) != nil || b.Models == nil {
+			writeJSON(w, 400, map[string]string{"detail": "models[] required"})
+			return
+		}
+		writeJSON(w, 200, map[string]any{"models": agent.SetModels(b.Models)})
 	case p == "/api/v1/vm/projects" && r.Method == "GET":
 		writeJSON(w, 200, map[string]any{"projects": s.store.List()})
 	case p == "/api/v1/vm/projects" && r.Method == "POST":

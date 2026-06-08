@@ -26,15 +26,28 @@ type LLMClient struct {
 	// "zai:" routes there (own base URL + key) instead of OpenRouter.
 	zaiKey     string
 	zaiBaseURL string
+	// dotenv holds parsed .env values for resolving custom-provider key env vars.
+	dotenv map[string]string
 	// Models is an ordered fallback list. The client tries each in turn until
 	// one returns a usable completion; only if all fail does Chat error out.
 	Models []string
 }
 
-// resolve picks the provider for a model entry. "zai:glm-4.6" -> z.ai.
+// resolve picks the provider for a model entry. "zai:glm-4.6" -> z.ai;
+// "custom:<KEY_ENV>|<BASE_URL>|<MODEL_ID>" -> any OpenAI-compatible host.
 func (c *LLMClient) resolve(model string) (url, key, name string, openrouter bool) {
 	if strings.HasPrefix(model, "zai:") {
 		return c.zaiBaseURL, c.zaiKey, strings.TrimPrefix(model, "zai:"), false
+	}
+	if strings.HasPrefix(model, "custom:") {
+		parts := strings.SplitN(strings.TrimPrefix(model, "custom:"), "|", 3)
+		if len(parts) == 3 {
+			k := os.Getenv(parts[0])
+			if k == "" {
+				k = c.dotenv[parts[0]]
+			}
+			return strings.TrimRight(parts[1], "/"), k, parts[2], false
+		}
 	}
 	return c.baseURL, c.apiKey, model, true
 }
@@ -87,19 +100,15 @@ func NewLLMClient() *LLMClient {
 		}
 		return fallback
 	}
-	// OPENROUTER_MODEL may be a comma-separated ordered fallback list.
-	raw := pick("OPENROUTER_MODEL", "openai/gpt-4o-mini")
-	var models []string
-	for _, m := range strings.Split(raw, ",") {
-		if m = strings.TrimSpace(m); m != "" {
-			models = append(models, m)
-		}
-	}
+	// The model chain comes from the runtime-editable models.json (GetModels),
+	// which bootstraps from OPENROUTER_MODEL on first run.
+	models := enabledChain()
 	return &LLMClient{
 		apiKey:     pick("OPENROUTER_API_KEY", ""),
 		baseURL:    strings.TrimRight(pick("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1"), "/"),
 		zaiKey:     pick("ZAI_API_KEY", ""),
 		zaiBaseURL: strings.TrimRight(pick("ZAI_BASE_URL", "https://api.z.ai/api/paas/v4"), "/"),
+		dotenv:     dot,
 		Models:     models,
 	}
 }
@@ -145,34 +154,55 @@ func (c *LLMClient) Chat(messages []ChatMessage, maxTokens int, temperature floa
 	return "", fmt.Errorf("all %d models failed; last: %s", len(c.Models), lastErr)
 }
 
-// Session circuit breaker: skip a model after it fails maxModelFailures times,
-// so a reliably-down/rate-limited model never wastes time again this session.
-const maxModelFailures = 2
+// Circuit breaker with a time-based cooldown: a model that fails
+// maxModelFailures times is skipped, but only until cooldownSeconds elapse, so a
+// transient all-provider outage doesn't permanently disable every model for the
+// rest of the session. A success clears the model's state immediately.
+const (
+	maxModelFailures = 2
+	cooldownSeconds  = 90
+)
 
 var (
 	breakerMu     sync.Mutex
 	modelFailures = map[string]int{}
+	trippedUntil  = map[string]time.Time{}
 )
 
 func isTripped(model string) bool {
 	breakerMu.Lock()
 	defer breakerMu.Unlock()
-	return modelFailures[model] >= maxModelFailures
+	until, ok := trippedUntil[model]
+	if !ok {
+		return false
+	}
+	if time.Now().After(until) {
+		// Cooldown elapsed: give the model another chance.
+		delete(trippedUntil, model)
+		modelFailures[model] = 0
+		return false
+	}
+	return true
 }
 func recordFailure(model string) {
 	breakerMu.Lock()
 	defer breakerMu.Unlock()
 	modelFailures[model]++
+	if modelFailures[model] >= maxModelFailures {
+		trippedUntil[model] = time.Now().Add(cooldownSeconds * time.Second)
+	}
 }
 func recordSuccess(model string) {
 	breakerMu.Lock()
 	defer breakerMu.Unlock()
 	delete(modelFailures, model)
+	delete(trippedUntil, model)
 }
 func resetBreaker() {
 	breakerMu.Lock()
 	defer breakerMu.Unlock()
 	modelFailures = map[string]int{}
+	trippedUntil = map[string]time.Time{}
 }
 
 // chatModel runs the retry loop for a single model.

@@ -11,6 +11,7 @@ import { getProjectStore } from "./projects.js";
 import { generateConcept, chatEdit } from "./director.js";
 import { getSandboxPolicy, policyToWire } from "./policy.js";
 import { skillInfo, skillRule } from "./skills.js";
+import { getModels, setModels, type ModelEntry } from "./models-config.js";
 import { WorkError } from "./types.js";
 
 const SERVICE = "OptimAIze VideoMaker API";
@@ -83,6 +84,15 @@ export function buildApp(webDir: string): Hono {
     const body = skillRule(name);
     if (body === null) return c.json({ detail: "rule not found" }, 404);
     return c.json({ name, content: body });
+  });
+
+  // Model fallback chain: users can add models from any provider (OpenRouter,
+  // z.ai, or a custom OpenAI-compatible base URL) and set the priority order.
+  vm.get("/models", (c) => c.json({ models: getModels() }));
+  vm.put("/models", async (c) => {
+    const b = (await c.req.json().catch(() => ({}))) as { models?: ModelEntry[] };
+    if (!Array.isArray(b.models)) return c.json({ detail: "models[] required" }, 400);
+    return c.json({ models: setModels(b.models) });
   });
 
   const store = getProjectStore();
