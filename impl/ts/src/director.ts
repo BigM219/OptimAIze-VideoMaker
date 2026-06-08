@@ -3,7 +3,7 @@
 // coherent multi-scene educational video, then let the user refine via chat.
 
 import { OpenRouterClient } from "./agent/llm-client.js";
-import { skillCore, skillRulesFor } from "./skills.js";
+import { skillCore, skillRulesFor, skillInfo } from "./skills.js";
 import { capStep, type ProjectStore, type Storyboard, type Scene, type ProjectStep } from "./projects.js";
 import type { ExecResult } from "./types.js";
 import { rootSource, indexSource } from "./remotion-source.js";
@@ -314,12 +314,19 @@ export async function chatEdit(
   const storyboardLine = p.storyboard
     ? `Storyboard scenes: ${JSON.stringify(p.storyboard.scenes.map((s) => ({ id: s.id, title: s.title })))}\n`
     : "";
+  // List the on-demand skill rules so the model knows what it can pull via
+  // read_skill_rule (it carries only the always-on core by default).
+  const rules = skillInfo().rules;
+  const ruleLine = rules.length
+    ? `On-demand skill rules (load with read_skill_rule when relevant): ${rules.join(", ")}\n`
+    : "";
   const systemPrompt =
     `You are a Remotion coding assistant editing an existing video project with tools. ` +
     `Make the smallest coherent change that satisfies the user, keeping the whole project consistent.\n\n` +
     `Project goal: ${p.goals || p.prompt}\n` +
     `Requirements: ${p.requirements || "(none)"}\n` +
     storyboardLine +
+    ruleLine +
     `Active file: ${activeFile || "(none)"}\n\n` +
     `Follow these Remotion best practices:\n${skillCore()}`;
 

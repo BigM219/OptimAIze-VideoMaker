@@ -182,10 +182,17 @@ func (s *Store) ChatEditAgent(pid, message, activeFile string) (string, []string
 		}
 		storyboardLine = "Storyboard scenes: " + strings.Join(ids, ", ") + "\n"
 	}
+	ruleLine := ""
+	if info := skills.Info(); info != nil {
+		if rules, ok := info["rules"].([]string); ok && len(rules) > 0 {
+			ruleLine = "On-demand skill rules you can load with read_skill_rule: " + strings.Join(rules, ", ") + "\n"
+		}
+	}
 	systemPrompt := "You are a Remotion coding assistant editing an existing video project with tools. " +
 		"Make the smallest coherent change that satisfies the user, keeping the whole project consistent.\n\n" +
 		"Project goal: " + p.Goals + "\nRequirements: " + p.Reqs + "\n" + storyboardLine +
-		"Active file: " + activeFile + "\n\nFollow these Remotion best practices:\n" + skills.Core()
+		"Active file: " + activeFile + "\n\n" + ruleLine +
+		"Follow these Remotion best practices:\n" + skills.Core()
 
 	res, err := tool.RunAgent(tool.RunOptions{
 		Registry:     s.newRegistry(pid),
