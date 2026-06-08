@@ -10,10 +10,13 @@ import { ReadTool } from "./read.js";
 import { WriteTool } from "./write.js";
 import { EditTool } from "./edit.js";
 import { ListFilesTool } from "./list-files.js";
+import { BashTool } from "./bash.js";
+import { GrepTool } from "./grep.js";
+import { GlobTool } from "./glob.js";
 import { InvalidTool } from "./invalid.js";
 
-// Ordered list of built-in tools. Increment B/D append to this.
-const BUILTIN: ToolDef<any>[] = [ReadTool, WriteTool, EditTool, ListFilesTool];
+// Ordered list of built-in tools. Increment D appends domain tools.
+const BUILTIN: ToolDef<any>[] = [ReadTool, WriteTool, EditTool, ListFilesTool, BashTool, GrepTool, GlobTool];
 
 export class ToolRegistry {
   private tools = new Map<string, ToolDef<any>>();
