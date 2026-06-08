@@ -14,10 +14,24 @@ import { BashTool } from "./bash.js";
 import { GrepTool } from "./grep.js";
 import { GlobTool } from "./glob.js";
 import { InvalidTool } from "./invalid.js";
+import { RenderSceneTool } from "./render-scene.js";
+import { UpdateStoryboardTool } from "./update-storyboard.js";
+import { ReadSkillRuleTool } from "./read-skill-rule.js";
 import { typecheck, formatDiagnostics } from "./diagnostics.js";
 
-// Ordered list of built-in tools. Increment D appends domain tools.
-const BUILTIN: ToolDef<any>[] = [ReadTool, WriteTool, EditTool, ListFilesTool, BashTool, GrepTool, GlobTool];
+// Ordered list of built-in tools, including the VideoMaker-specific domain tools.
+const BUILTIN: ToolDef<any>[] = [
+  ReadTool,
+  WriteTool,
+  EditTool,
+  ListFilesTool,
+  BashTool,
+  GrepTool,
+  GlobTool,
+  RenderSceneTool,
+  UpdateStoryboardTool,
+  ReadSkillRuleTool,
+];
 
 export class ToolRegistry {
   private tools = new Map<string, ToolDef<any>>();
