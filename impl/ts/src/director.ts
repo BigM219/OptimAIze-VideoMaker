@@ -283,9 +283,11 @@ async function repairLoop(
       content:
         `You are a Remotion build-fixer working iteratively, like a coding agent. ` +
         `Each turn you receive the latest build/render error and the full project source. ` +
-        `Diagnose the actual cause (often a truncated/unclosed file, a bad import, or a type error), ` +
+        `Diagnose the actual cause (often a truncated/unclosed file, a bad import, a type error, ` +
+        `or a Remotion runtime misuse such as interpolating a color string with interpolate()), ` +
         `then reply with ONLY a fenced \`\`\`json block: {"files":[{"path":"src/...","content":"COMPLETE file content"}],"note":"what you changed"}. ` +
-        `Always return whole files, never fragments. If a file looks truncated, rewrite it complete.`,
+        `Always return whole files, never fragments. If a file looks truncated, rewrite it complete.\n\n` +
+        `Follow these Remotion best practices (the same rules the scenes were written against):\n${skillCore()}`,
     },
   ];
   let lastErr = firstFail.stderr + "\n" + firstFail.stdout;
@@ -343,7 +345,7 @@ async function repairOnce(store: ProjectStore, projectId: string, client: OpenRo
     [
       {
         role: "system",
-        content: `You fix Remotion build/render errors. Reply with ONLY a fenced \`\`\`json block: {"files":[{"path":"src/...","content":"full file"}],"note":"what you fixed"}. Rewrite only the files that need changing; provide complete file contents.`,
+        content: `You fix Remotion build/render errors. Reply with ONLY a fenced \`\`\`json block: {"files":[{"path":"src/...","content":"full file"}],"note":"what you fixed"}. Rewrite only the files that need changing; provide complete file contents.\n\nFollow these Remotion best practices:\n${skillCore()}`,
       },
       { role: "user", content: `Render error:\n${errorText.slice(0, 1500)}\n\nProject files:\n${fileBlock.slice(0, 12000)}` },
     ],

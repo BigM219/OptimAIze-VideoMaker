@@ -31,6 +31,27 @@
 
 * { box-sizing: border-box; }
 
+/* Themed scrollbars everywhere so scroll regions read as part of the cyberpunk
+   terminal rather than the OS default. Firefox uses scrollbar-color/width;
+   WebKit/Chromium uses the ::-webkit-scrollbar pseudo-elements. */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: rgba(56, 247, 255, 0.4) transparent;
+}
+::-webkit-scrollbar { width: 10px; height: 10px; }
+::-webkit-scrollbar-track { background: rgba(5, 9, 24, 0.5); }
+::-webkit-scrollbar-thumb {
+  background: linear-gradient(180deg, rgba(56, 247, 255, 0.45), rgba(157, 124, 255, 0.45));
+  border: 2px solid transparent;
+  background-clip: padding-box;
+  border-radius: 999px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: linear-gradient(180deg, var(--accent), var(--accent-3));
+  background-clip: padding-box;
+}
+::-webkit-scrollbar-corner { background: transparent; }
+
 html { scroll-behavior: smooth; }
 
 body {
@@ -907,7 +928,7 @@ input:focus, textarea:focus, select:focus {
   padding: 8px 10px;
   overflow-x: auto;
   border-bottom: 1px solid var(--border);
-  background: rgba(5, 9, 24, 0.5);
+  background: rgba(5, 9, 24, 0.6);
   align-items: center;
   flex: none;
 }
@@ -954,11 +975,15 @@ input:focus, textarea:focus, select:focus {
   gap: 8px;
   padding: 7px 12px;
   border-bottom: 1px solid var(--border);
+  background: rgba(5, 9, 24, 0.6);
   flex: none;
 }
 .ss-view-title { color: var(--accent); font-size: 0.82rem; }
 .ss-frames { white-space: nowrap; }
 
+/* The Studio iframe is its own (light-themed) app, so frame it as a recessed
+   "screen" — inset padding + bezel border + cyan glow — so it reads as a panel
+   inside our terminal rather than a foreign window floating on top. */
 .ss-stage {
   flex: 1;
   min-height: 0;
@@ -967,9 +992,20 @@ input:focus, textarea:focus, select:focus {
   flex-direction: column;
   align-items: center;
   justify-content: center;
-  background: #04070f;
+  padding: 10px;
+  background:
+    radial-gradient(circle 420px at 50% 0%, rgba(56, 247, 255, 0.06), transparent 70%),
+    #04070f;
 }
-.ss-frame { width: 100%; height: 100%; border: 0; flex: 1; }
+.ss-frame {
+  width: 100%;
+  height: 100%;
+  flex: 1;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: #fff;
+  box-shadow: var(--glow-cyan), inset 0 0 0 1px rgba(5, 9, 24, 0.6);
+}
 .ss-stage-msg {
   display: flex;
   flex-direction: column;

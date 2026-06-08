@@ -239,9 +239,11 @@ func (s *Store) repairLoop(pid string, client *agent.LLMClient, firstFail types.
 	messages := []agent.ChatMessage{
 		{Role: "system", Content: "You are a Remotion build-fixer working iteratively, like a coding agent. " +
 			"Each turn you receive the latest build/render error and the full project source. " +
-			"Diagnose the actual cause (often a truncated/unclosed file, a bad import, or a type error), " +
+			"Diagnose the actual cause (often a truncated/unclosed file, a bad import, a type error, " +
+			"or a Remotion runtime misuse such as interpolating a color string with interpolate()), " +
 			"then reply with ONLY a fenced ```json block: {\"files\":[{\"path\":\"src/...\",\"content\":\"COMPLETE file content\"}],\"note\":\"what you changed\"}. " +
-			"Always return whole files, never fragments. If a file looks truncated, rewrite it complete."},
+			"Always return whole files, never fragments. If a file looks truncated, rewrite it complete.\n\n" +
+			"Follow these Remotion best practices (the same rules the scenes were written against):\n" + skills.Core()},
 	}
 	lastErr := firstFail.Stderr + "\n" + firstFail.Stdout
 	noChange := 0
