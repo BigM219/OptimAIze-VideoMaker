@@ -6,6 +6,7 @@ import { OpenRouterClient } from "./agent/llm-client.js";
 import { skillCore, skillRulesFor } from "./skills.js";
 import { capStep, type ProjectStore, type Storyboard, type Scene, type ProjectStep } from "./projects.js";
 import type { ExecResult } from "./types.js";
+import { rootSource, indexSource } from "./remotion-source.js";
 
 function extractJson(text: string): string | null {
   const parts = text.split("```");
@@ -56,69 +57,6 @@ function sceneSystem(rules: string): string {
 
 Follow this skill:
 ${core}${rules ? `\n\nRelevant rules for this scene:${rules}` : ""}`;
-}
-
-// Build Root.tsx registering ONE <Composition> per scene plus the combined
-// "Video" composition, so Remotion Studio lists every slide and renders each
-// directly from code (live, hot-reload). Only the scenes passed in are
-// imported/registered, so Studio hot-reloads cleanly as slides are written one
-// at a time — a scene whose file doesn't exist yet is simply absent.
-function rootSource(sb: Storyboard, scenes: Scene[] = sb.scenes): string {
-  const imports = scenes.map((s) => `import {${s.id}} from './scenes/${s.id}';`).join("\n");
-  const total = scenes.reduce((n, s) => n + s.durationInFrames, 0);
-  const series = scenes
-    .map((s) => `      <Series.Sequence durationInFrames={${s.durationInFrames}}>\n        <${s.id} />\n      </Series.Sequence>`)
-    .join("\n");
-  const perScene = scenes
-    .map(
-      (s) => `    <Composition
-      id="${s.id}"
-      component={${s.id}}
-      durationInFrames={${s.durationInFrames}}
-      fps={${sb.fps}}
-      width={${sb.width}}
-      height={${sb.height}}
-    />`,
-    )
-    .join("\n");
-  const combined =
-    scenes.length > 0
-      ? `    <Composition
-      id="Video"
-      component={Video}
-      durationInFrames={${total}}
-      fps={${sb.fps}}
-      width={${sb.width}}
-      height={${sb.height}}
-    />`
-      : "";
-  return `import React from 'react';
-import {Composition, Series} from 'remotion';
-${imports}
-
-export const Video: React.FC = () => {
-  return (
-    <Series>
-${series}
-    </Series>
-  );
-};
-
-export const RemotionRoot: React.FC = () => {
-  return (
-    <>
-${[combined, perScene].filter(Boolean).join("\n")}
-    </>
-  );
-};
-`;
-}
-
-function indexSource(): string {
-  return `import {registerRoot} from 'remotion';
-import {RemotionRoot} from './Root';
-registerRoot(RemotionRoot);
-`;
 }
 
 function extractTsx(text: string): string {
