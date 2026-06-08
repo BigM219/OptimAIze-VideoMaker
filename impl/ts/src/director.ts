@@ -7,6 +7,7 @@ import { skillCore, skillRulesFor } from "./skills.js";
 import { capStep, type ProjectStore, type Storyboard, type Scene, type ProjectStep } from "./projects.js";
 import type { ExecResult } from "./types.js";
 import { rootSource, indexSource } from "./remotion-source.js";
+import { runAgent } from "./tool/agent-loop.js";
 
 function extractJson(text: string): string | null {
   const parts = text.split("```");
@@ -294,7 +295,62 @@ async function repairOnce(store: ProjectStore, projectId: string, client: OpenRo
 
 // Code-aware chat: full context (all files + requirements + goals + active file
 // + history), model returns file edits, we write them (Studio hot-reloads).
+// Code-aware chat now runs the agentic tool loop (Increment E): the model
+// reads/greps/edits/render-checks step by step instead of rewriting whole files
+// in one shot. Falls back to the old single-shot applyEdits path if the project
+// has no sandbox (can't run tools) or the loop produces nothing usable.
 export async function chatEdit(
+  store: ProjectStore,
+  projectId: string,
+  message: string,
+  activeFile: string,
+): Promise<{ note: string; edited: string[] }> {
+  const p = store.get(projectId);
+  const client = new OpenRouterClient();
+
+  if (!p.sandboxId) return chatEditLegacy(store, projectId, message, activeFile);
+
+  const backend = store.manager().backendFor(p.sandboxId);
+  const storyboardLine = p.storyboard
+    ? `Storyboard scenes: ${JSON.stringify(p.storyboard.scenes.map((s) => ({ id: s.id, title: s.title })))}\n`
+    : "";
+  const systemPrompt =
+    `You are a Remotion coding assistant editing an existing video project with tools. ` +
+    `Make the smallest coherent change that satisfies the user, keeping the whole project consistent.\n\n` +
+    `Project goal: ${p.goals || p.prompt}\n` +
+    `Requirements: ${p.requirements || "(none)"}\n` +
+    storyboardLine +
+    `Active file: ${activeFile || "(none)"}\n\n` +
+    `Follow these Remotion best practices:\n${skillCore()}`;
+
+  const edited: string[] = [];
+  try {
+    const result = await runAgent({
+      store,
+      projectId,
+      backend,
+      sandboxId: p.sandboxId,
+      client,
+      systemPrompt,
+      userGoal: message,
+      log: (phase, detail, extra) => pushStep(p, phase, detail, extra),
+      maxTurns: 10,
+    });
+    edited.push(...result.edited);
+    const note = result.summary || (edited.length ? `Edited ${edited.join(", ")}.` : "No changes made.");
+    p.chat.push({ role: "user", content: message });
+    p.chat.push({ role: "assistant", content: note });
+    p.updatedAt = Date.now() / 1000;
+    return { note, edited };
+  } catch (e) {
+    pushStep(p, "error", `Agent loop failed, falling back: ${String((e as Error).message ?? e)}`, { kind: "error" });
+    return chatEditLegacy(store, projectId, message, activeFile);
+  }
+}
+
+// Legacy single-shot chat edit (pre-harness). Kept as a fallback for the
+// no-sandbox case and if the agent loop errors out, so chat never hard-fails.
+async function chatEditLegacy(
   store: ProjectStore,
   projectId: string,
   message: string,
