@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import Editor from "@monaco-editor/react";
 import { api, type Project, type FileEntry, type SkillInfo, type ModelEntry } from "./lib/api";
+import { Transcript } from "./components/Transcript";
 
 // Recursively flatten the project's src tree into a sorted file list.
 async function loadFiles(projectId: string): Promise<string[]> {
@@ -153,101 +154,108 @@ export function App() {
 
   if (!project) return <Welcome onMake={describeAndMake} busy={busy} />;
 
+  const working = project.state === "generating" || project.state === "rendering";
+
   return (
-    <div className="app">
-      <header>
-        <h1>OptimAIze-VideoMaker</h1>
-        <span className="badge">{project.state}</span>
-        <span className="muted">{project.id}</span>
+    <div className="vm-app">
+      <header className="vm-nav">
+        <span className="brand-mark">
+          <span className="logo-bracket">[</span>OptimAIze<strong><span>/</span></strong>VideoMaker<span className="logo-bracket">]</span>
+        </span>
+        <span className={`status-chip${project.state === "ready" ? " status-chip--ok" : ""}`}>{project.state}</span>
+        <span className="muted small mono">{project.id}</span>
         <div className="spacer" />
-        <ConceptBar onGenerate={generate} busy={busy || project.state === "generating" || project.state === "rendering"} />
-        <button onClick={launchStudio} disabled={project.state !== "ready"}>Live preview</button>
-        <button onClick={exportVideo} disabled={busy || project.state !== "ready"}>Export mp4</button>
-        <button className="secondary" onClick={() => setShowSettings(true)}>Settings</button>
+        <ConceptBar onGenerate={generate} busy={busy || working} />
+        <button className="secondary-action" onClick={launchStudio} disabled={project.state !== "ready"}>Live preview</button>
+        <button className="secondary-action" onClick={exportVideo} disabled={busy || project.state !== "ready"}>Export mp4</button>
+        <button className="ghost-action" onClick={() => setShowSettings(true)}>Settings</button>
       </header>
 
       {showSettings && <SettingsPanel onClose={() => setShowSettings(false)} />}
 
-      <div className="layout">
-        {/* Left: file tree + editor */}
-        <div className="pane editor-pane">
-          <div className="filetree">
-            {files.length === 0 && <div className="muted pad">No files yet. Generate or wait for scaffold…</div>}
+      <div className="vm-layout">
+        {/* Left: live coding-agent transcript */}
+        <section className="vm-pane vm-pane--transcript">
+          <Transcript steps={project.steps} state={project.state} error={project.error} />
+        </section>
+
+        {/* Center: live preview (Remotion Studio) / rendered video */}
+        <section className="vm-pane vm-pane--preview">
+          <div className="vm-pane-head"><span className="eyebrow">Preview</span></div>
+          <div className="vm-preview-body">
+            {studioUrl ? (
+              <iframe title="preview" src={studioUrl} className="vm-studio" />
+            ) : project.export_path ? (
+              <div className="vm-preview-fallback">
+                <video src={api.rawUrl(project.id, project.export_path)} controls />
+                <p className="muted small">Rendered video. Click “Live preview” for the interactive Studio.</p>
+              </div>
+            ) : (
+              <div className="muted pad vm-center">
+                {working ? "Building your video — watch the agent process on the left." : "Launch “Live preview” for the Studio, or describe a video to generate."}
+              </div>
+            )}
+          </div>
+        </section>
+
+        {/* Right: files + editor + code-aware chat */}
+        <section className="vm-pane vm-pane--side">
+          <div className="vm-filetree">
+            <div className="vm-pane-head"><span className="eyebrow">Files</span></div>
+            {files.length === 0 && <div className="muted pad small">No files yet — generating…</div>}
             {files.map((f) => (
-              <div key={f} className={"file-row" + (f === activeFile ? " active" : "")} onClick={() => openFile(f)}>
+              <div key={f} className={"vm-file-row" + (f === activeFile ? " active" : "")} onClick={() => openFile(f)}>
                 {f.replace(/^src\//, "")}
               </div>
             ))}
           </div>
-          <div className="editor">
-            <div className="editor-head">
-              <span>{activeFile || "(no file)"}</span>
-              <button className="small" onClick={saveFile} disabled={!dirty || !activeFile}>
-                {dirty ? "Save (hot-reloads)" : "Saved"}
+          <div className="vm-editor">
+            <div className="vm-editor-head">
+              <span className="mono small">{activeFile || "(no file)"}</span>
+              <button className="ghost-action vm-mini" onClick={saveFile} disabled={!dirty || !activeFile}>
+                {dirty ? "Save ↵" : "Saved"}
               </button>
             </div>
-            <Editor
-              height="100%"
-              theme="vs-dark"
-              language={activeFile.endsWith(".css") ? "css" : activeFile.endsWith(".json") ? "json" : "typescript"}
-              value={code}
-              onChange={(v) => {
-                setCode(v ?? "");
-                setDirty(true);
-              }}
-              options={{ fontSize: 13, minimap: { enabled: false }, automaticLayout: true }}
-            />
-          </div>
-        </div>
-
-        {/* Center: live preview (Remotion Studio) */}
-        <div className="pane preview-pane">
-          {studioUrl ? (
-            <iframe title="preview" src={studioUrl} className="studio" />
-          ) : project.export_path ? (
-            <div className="preview-fallback">
-              <video src={api.rawUrl(project.id, project.export_path)} controls />
-              <p className="muted">Rendered video. Click "Live preview" for the interactive Studio.</p>
+            <div className="vm-editor-body">
+              <Editor
+                height="100%"
+                theme="vs-dark"
+                language={activeFile.endsWith(".css") ? "css" : activeFile.endsWith(".json") ? "json" : "typescript"}
+                value={code}
+                onChange={(v) => {
+                  setCode(v ?? "");
+                  setDirty(true);
+                }}
+                options={{ fontSize: 13, minimap: { enabled: false }, automaticLayout: true }}
+              />
             </div>
-          ) : (
-            <div className="muted pad center">Click "Live preview" to launch Remotion Studio, or generate a concept first.</div>
-          )}
-        </div>
-
-        {/* Right: code-aware chat + steps */}
-        <div className="pane chat-pane">
-          <div className="steps">
-            <h3>Director steps</h3>
-            {project.steps.slice(-8).map((s) => (
-              <div key={s.index} className="step">
-                <b>{s.phase}</b> {s.detail}
-              </div>
-            ))}
-            {project.error && <div className="step err">error: {project.error}</div>}
           </div>
-          <div className="chat-log">
-            {chat.map((m, i) => (
-              <div key={i} className={"msg " + m.role}>
-                <b>{m.role}</b>
-                <div>{m.content}</div>
-              </div>
-            ))}
+          <div className="vm-chat">
+            <div className="vm-chat-log">
+              {chat.length === 0 && <div className="muted small pad">Steer the video by chat. The model sees every file + the goal.</div>}
+              {chat.map((m, i) => (
+                <div key={i} className={"vm-msg vm-msg--" + m.role}>
+                  <b>{m.role}</b>
+                  <div>{m.content}</div>
+                </div>
+              ))}
+            </div>
+            <div className="vm-chat-input">
+              <textarea
+                rows={2}
+                placeholder="e.g. 'đổi tiêu đề sang tiếng Việt và nền tím'…"
+                value={chatInput}
+                onChange={(e) => setChatInput(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) void sendChat();
+                }}
+              />
+              <button className="primary-action vm-mini" onClick={sendChat} disabled={busy || !chatInput.trim()}>
+                Send
+              </button>
+            </div>
           </div>
-          <div className="chat-input">
-            <textarea
-              rows={3}
-              placeholder="Edit the video by chat — e.g. 'make the title bigger and the plot points blue'. The model sees every file + the goal."
-              value={chatInput}
-              onChange={(e) => setChatInput(e.target.value)}
-              onKeyDown={(e) => {
-                if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) void sendChat();
-              }}
-            />
-            <button onClick={sendChat} disabled={busy || !chatInput.trim()}>
-              Send (Ctrl+Enter)
-            </button>
-          </div>
-        </div>
+        </section>
       </div>
     </div>
   );
