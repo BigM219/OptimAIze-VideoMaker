@@ -650,9 +650,14 @@ dd {
    VideoMaker workspace — extends the parent cyberpunk-terminal theme above.
    Uses the same tokens (--accent cyan, --accent-2 magenta, --ok green,
    --clip-* corners, glow shadows) so it reads as one OptimAIze product.
+
+   NOTE: selectors here MUST match the class names the JSX renders —
+   App.tsx uses `vm-*` names, Transcript.tsx uses `tr-*` names.
    ======================================================================== */
 
-.app {
+/* The workspace owns the full viewport and never scrolls as a whole; each
+   pane scrolls internally. This is what keeps the 3-pane layout fixed. */
+.vm-app {
   display: flex;
   flex-direction: column;
   height: 100vh;
@@ -660,7 +665,7 @@ dd {
 }
 
 /* Top bar */
-.app > header {
+.vm-nav {
   display: flex;
   align-items: center;
   gap: 12px;
@@ -669,70 +674,17 @@ dd {
   background: rgba(5, 9, 24, 0.82);
   box-shadow: inset 0 -1px 0 rgba(124, 247, 255, 0.1);
   backdrop-filter: blur(18px) saturate(1.2);
+  flex: none;
 }
+.vm-nav .brand-mark { font-size: 0.95rem; letter-spacing: 0.12em; }
+.vm-nav .spacer { flex: 1; }
 
-.app > header h1 {
-  margin: 0;
-  font-family: Orbitron, monospace;
-  font-size: 1.1rem;
-  letter-spacing: 0.14em;
-  text-shadow: var(--glow-cyan);
-}
-
-.app > header .spacer { flex: 1; }
-
-.badge {
-  display: inline-flex;
-  align-items: center;
-  padding: 4px 10px;
-  border: 1px solid var(--border);
-  border-radius: 999px;
-  background: var(--surface-muted);
-  color: var(--accent);
-  font-size: 0.72rem;
-  letter-spacing: 0.12em;
-  text-transform: uppercase;
-}
-
-.badge.generating, .badge.rendering, .badge.scaffolding {
-  color: var(--warn);
-  border-color: rgba(255, 230, 109, 0.4);
-  background: rgba(255, 230, 109, 0.08);
-  animation: badge-pulse 1.2s ease-in-out infinite;
-}
-.badge.ready { color: var(--ok); border-color: rgba(125, 255, 140, 0.4); background: rgba(125, 255, 140, 0.08); }
-.badge.failed { color: var(--accent-2); border-color: rgba(255, 61, 242, 0.4); background: rgba(255, 61, 242, 0.08); }
-
-@keyframes badge-pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.45; } }
-
+/* Shared helpers */
 .muted { color: var(--muted); }
 .mono { font-family: 'Share Tech Mono', monospace; }
 .small { font-size: 0.78rem; }
 .pad { padding: 16px; }
 .center { text-align: center; }
-
-/* Buttons reuse the parent action style */
-.app button {
-  padding: 8px 13px;
-  border: 1px solid var(--border);
-  border-radius: 0;
-  clip-path: var(--clip-sm);
-  background: linear-gradient(135deg, var(--accent), var(--accent-2));
-  color: #061018;
-  font-family: Orbitron, monospace;
-  font-size: 0.7rem;
-  font-weight: 700;
-  letter-spacing: 0.1em;
-  text-transform: uppercase;
-  transition: transform 160ms ease, box-shadow 160ms ease, opacity 160ms ease;
-}
-.app button:hover:not(:disabled) { transform: translateY(-1px); box-shadow: var(--glow-cyan); }
-.app button:disabled { opacity: 0.4; cursor: not-allowed; }
-.app button.secondary, .app button.small {
-  background: var(--surface-strong);
-  color: var(--text);
-}
-.app button.small { font-size: 0.64rem; padding: 6px 10px; }
 
 input, textarea, select {
   border: 1px solid var(--border);
@@ -748,173 +700,252 @@ input:focus, textarea:focus, select:focus {
   box-shadow: var(--glow-cyan);
 }
 
+/* Smaller action buttons in the dense workspace toolbar */
+.vm-nav .secondary-action,
+.vm-nav .ghost-action,
+.vm-nav .primary-action { padding: 8px 12px; font-size: 0.66rem; }
+.vm-mini { padding: 5px 10px !important; font-size: 0.6rem !important; }
+
 /* Concept bar in header */
-.conceptbar { display: flex; gap: 8px; align-items: center; flex: 1; max-width: 560px; }
+.conceptbar { display: flex; gap: 8px; align-items: center; flex: 1; max-width: 520px; }
 .conceptbar input { flex: 1; }
 
-/* 3-pane fixed layout */
-.layout {
+/* ---- 3-pane fixed layout ---- */
+.vm-layout {
   flex: 1;
   display: grid;
   grid-template-columns: minmax(360px, 1.1fr) minmax(0, 1.4fr) minmax(340px, 1fr);
   gap: 1px;
   background: var(--border);
+  min-height: 0;        /* critical: let the grid shrink so panes can scroll */
   overflow: hidden;
 }
 
-.pane {
+.vm-pane {
   display: flex;
   flex-direction: column;
   background: var(--bg);
   overflow: hidden;
   min-height: 0;
 }
+.vm-pane--preview { background: #04070f; }
 
-.pane-head {
+.vm-pane-head {
   display: flex;
   align-items: center;
   gap: 8px;
   padding: 8px 12px;
   border-bottom: 1px solid var(--border);
-  color: var(--accent);
+  background: rgba(5, 9, 24, 0.6);
+  flex: none;
+}
+.vm-pane-head .eyebrow { margin: 0; }
+
+/* ---- Transcript (live coding-agent log) — Transcript.tsx ---- */
+.transcript {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  overflow: hidden;
+}
+.tr-top {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--border);
+  background: rgba(5, 9, 24, 0.6);
+  flex: none;
+}
+.tr-title {
   font-family: Orbitron, monospace;
   font-size: 0.68rem;
   letter-spacing: 0.16em;
   text-transform: uppercase;
-  background: rgba(5, 9, 24, 0.6);
+  color: var(--accent);
 }
-.pane-head::before { content: '> '; color: var(--ok); }
+.tr-state { text-transform: uppercase; letter-spacing: 0.1em; }
+.tr-elapsed { margin-left: auto; }
+.tr-led {
+  width: 9px; height: 9px; border-radius: 50%;
+  background: var(--muted);
+}
+.tr-led.live { background: var(--ok); box-shadow: 0 0 12px var(--ok); animation: tr-pulse 1.2s ease-in-out infinite; }
+.tr-led.bad { background: var(--accent-2); box-shadow: 0 0 12px var(--accent-2); }
+.tr-led.idle { background: var(--muted); }
+@keyframes tr-pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.35; } }
 
-/* ---- Transcript (live coding-agent log) ---- */
-.transcript { flex: 1; overflow-y: auto; padding: 12px; display: flex; flex-direction: column; gap: 10px; }
+/* The only scrolling region of the transcript */
+.tr-body {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
 
-.t-block {
+/* Cards (file writes, command output, plan) */
+.tr-card {
   border: 1px solid var(--border);
   background: var(--surface);
   clip-path: var(--clip-sm);
 }
-.t-block__head {
+.tr-file-head, .tr-out-head {
   display: flex;
   align-items: center;
   gap: 8px;
+  width: 100%;
   padding: 8px 10px;
+  background: transparent;
+  border: 0;
   cursor: pointer;
-  font-size: 0.8rem;
+  text-align: left;
+  font-size: 0.78rem;
+  color: var(--text);
 }
-.t-kind {
+.tr-caret { color: var(--accent-3); width: 12px; }
+.tr-icon { color: var(--accent); }
+.tr-path { flex: 1; color: var(--accent); }
+.tr-bytes { color: var(--muted); font-size: 0.64rem; }
+
+.tr-exit {
   font-family: Orbitron, monospace;
   font-size: 0.6rem;
-  letter-spacing: 0.1em;
-  text-transform: uppercase;
   padding: 2px 7px;
-  border: 1px solid var(--border);
   border-radius: 999px;
-  color: var(--muted);
 }
-.t-kind.plan { color: var(--accent-3); border-color: rgba(157, 124, 255, 0.4); }
-.t-kind.write_file { color: var(--accent); border-color: rgba(56, 247, 255, 0.4); }
-.t-kind.command { color: var(--ok); border-color: rgba(125, 255, 140, 0.4); }
-.t-kind.command_output { color: var(--muted); }
-.t-kind.repair { color: var(--warn); border-color: rgba(255, 230, 109, 0.4); }
-.t-kind.error { color: var(--accent-2); border-color: rgba(255, 61, 242, 0.4); }
-.t-detail { flex: 1; color: var(--text); }
-.t-detail .path { font-family: 'Share Tech Mono', monospace; color: var(--accent); }
+.tr-exit.ok { color: var(--ok); border: 1px solid rgba(125, 255, 140, 0.4); }
+.tr-exit.bad { color: var(--accent-2); border: 1px solid rgba(255, 61, 242, 0.4); }
 
-.t-block pre {
+/* Code / output blocks — capped so a long file can't grow the pane */
+.tr-code {
   margin: 0;
   padding: 10px 12px;
   border-top: 1px solid var(--border);
-  background: rgba(1, 4, 12, 0.7);
+  background: rgba(1, 4, 12, 0.72);
   color: #cfe9ff;
   font-family: 'Share Tech Mono', monospace;
   font-size: 0.72rem;
   line-height: 1.5;
-  max-height: 280px;
+  max-height: 320px;
   overflow: auto;
   white-space: pre-wrap;
   word-break: break-word;
 }
-.t-block pre.term { color: var(--ok); }
-.t-block pre.term.fail { color: #ff9bbd; }
+.tr-stdout { color: var(--ok); }
 
-.exit-badge {
+.tr-plan-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+  color: var(--accent-3);
   font-family: Orbitron, monospace;
-  font-size: 0.6rem;
-  padding: 2px 7px;
-  border-radius: 999px;
+  font-size: 0.72rem;
+  letter-spacing: 0.08em;
 }
-.exit-badge.ok { color: var(--ok); border: 1px solid rgba(125, 255, 140, 0.4); }
-.exit-badge.bad { color: var(--accent-2); border: 1px solid rgba(255, 61, 242, 0.4); }
+.tr-plan .tr-code { border-top: 1px solid var(--border); }
 
-.t-cursor {
+/* One-line steps (command, repair, info, error) */
+.tr-line {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  padding: 6px 10px;
+  font-family: 'Share Tech Mono', monospace;
+  font-size: 0.78rem;
+  border: 1px solid var(--border);
+  background: var(--surface);
+  clip-path: var(--clip-sm);
+}
+.tr-cmd { color: var(--ok); }
+.tr-prompt { color: var(--ok); font-weight: 700; }
+.tr-repair { color: var(--warn); border-color: rgba(255, 230, 109, 0.35); background: rgba(255, 230, 109, 0.06); }
+.tr-info { color: var(--muted); }
+.tr-info b { color: var(--accent); margin-right: 4px; text-transform: uppercase; font-size: 0.66rem; letter-spacing: 0.08em; }
+.tr-err { color: #ff9bbd; border-color: rgba(255, 61, 242, 0.4); background: rgba(255, 61, 242, 0.07); }
+.tr-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--muted); display: inline-block; }
+
+.tr-working {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 10px;
+  color: var(--ok);
+  font-family: 'Share Tech Mono', monospace;
+  font-size: 0.8rem;
+}
+.tr-cursor {
   display: inline-block;
   width: 9px;
   height: 1.05em;
   background: var(--ok);
   box-shadow: 0 0 10px var(--ok);
-  animation: blink 1s steps(1) infinite;
+  animation: tr-blink 1s steps(1) infinite;
   vertical-align: text-bottom;
 }
-@keyframes blink { 50% { opacity: 0; } }
+@keyframes tr-blink { 50% { opacity: 0; } }
 
-.t-working {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 8px 10px;
-  color: var(--ok);
-  font-family: 'Share Tech Mono', monospace;
-  font-size: 0.8rem;
+/* ---- Preview pane ---- */
+.vm-preview-body { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+.vm-studio { width: 100%; height: 100%; border: 0; flex: 1; }
+.vm-preview-fallback { flex: 1; display: flex; flex-direction: column; gap: 10px; padding: 14px; align-items: center; justify-content: center; }
+.vm-preview-fallback video { width: 100%; max-height: 78%; border: 1px solid var(--border); box-shadow: var(--glow-cyan); }
+.vm-center { flex: 1; display: flex; align-items: center; justify-content: center; text-align: center; }
+
+/* ---- Side pane: files + editor + chat (stacked, each bounded) ---- */
+.vm-pane--side { gap: 0; }
+.vm-filetree {
+  max-height: 22%;
+  min-height: 80px;
+  overflow-y: auto;
+  border-bottom: 1px solid var(--border);
+  flex: none;
 }
-.t-elapsed { margin-left: auto; color: var(--muted); }
-
-/* Storyboard plan card */
-.plan-card { padding: 10px 12px; border-top: 1px solid var(--border); display: grid; gap: 6px; }
-.plan-scene { display: flex; gap: 10px; font-size: 0.76rem; }
-.plan-scene .n { color: var(--accent-3); width: 22px; }
-.plan-scene .frames { margin-left: auto; color: var(--muted); }
-
-/* ---- Files + editor pane ---- */
-.filetree { max-height: 30%; overflow-y: auto; border-bottom: 1px solid var(--border); padding: 6px; }
-.file-row {
-  padding: 5px 9px;
+.vm-file-row {
+  padding: 5px 12px;
   font-family: 'Share Tech Mono', monospace;
   font-size: 0.76rem;
   color: var(--muted);
   cursor: pointer;
   border-left: 2px solid transparent;
 }
-.file-row:hover { color: var(--accent); background: var(--surface-muted); }
-.file-row.active { color: var(--accent); border-left-color: var(--accent); background: var(--accent-soft); }
+.vm-file-row:hover { color: var(--accent); background: var(--surface-muted); }
+.vm-file-row.active { color: var(--accent); border-left-color: var(--accent); background: var(--accent-soft); }
 
-.editor { flex: 1; display: flex; flex-direction: column; min-height: 0; }
-.editor-head {
+.vm-editor { flex: 1; display: flex; flex-direction: column; min-height: 0; }
+.vm-editor-head {
   display: flex;
   align-items: center;
   justify-content: space-between;
+  gap: 8px;
   padding: 6px 10px;
   border-bottom: 1px solid var(--border);
   font-family: 'Share Tech Mono', monospace;
   font-size: 0.74rem;
   color: var(--accent);
+  flex: none;
 }
+.vm-editor-body { flex: 1; min-height: 0; }
 
-/* ---- Preview pane ---- */
-.preview-pane { background: #04070f; }
-.studio { width: 100%; height: 100%; border: 0; }
-.preview-fallback { flex: 1; display: flex; flex-direction: column; gap: 10px; padding: 14px; align-items: center; justify-content: center; }
-.preview-fallback video { width: 100%; max-height: 70%; border: 1px solid var(--border); box-shadow: var(--glow-cyan); }
-
-/* ---- Chat pane ---- */
-.chat-pane { background: var(--bg); }
-.chat-log { flex: 1; overflow-y: auto; padding: 12px; display: flex; flex-direction: column; gap: 8px; }
-.msg { padding: 8px 10px; border: 1px solid var(--border); clip-path: var(--clip-sm); font-size: 0.82rem; }
-.msg b { display: block; font-size: 0.62rem; text-transform: uppercase; letter-spacing: 0.1em; margin-bottom: 3px; }
-.msg.user { background: var(--accent-soft); border-color: rgba(56, 247, 255, 0.3); }
-.msg.user b { color: var(--accent); }
-.msg.assistant { background: rgba(157, 124, 255, 0.08); border-color: rgba(157, 124, 255, 0.3); }
-.msg.assistant b { color: var(--accent-3); }
-.chat-input { padding: 10px; border-top: 1px solid var(--border); display: flex; flex-direction: column; gap: 8px; }
+.vm-chat {
+  max-height: 34%;
+  display: flex;
+  flex-direction: column;
+  border-top: 1px solid var(--border);
+  flex: none;
+}
+.vm-chat-log { flex: 1; min-height: 0; overflow-y: auto; padding: 10px; display: flex; flex-direction: column; gap: 8px; }
+.vm-msg { padding: 8px 10px; border: 1px solid var(--border); clip-path: var(--clip-sm); font-size: 0.82rem; }
+.vm-msg b { display: block; font-size: 0.62rem; text-transform: uppercase; letter-spacing: 0.1em; margin-bottom: 3px; }
+.vm-msg--user { background: var(--accent-soft); border-color: rgba(56, 247, 255, 0.3); }
+.vm-msg--user b { color: var(--accent); }
+.vm-msg--assistant { background: rgba(157, 124, 255, 0.08); border-color: rgba(157, 124, 255, 0.3); }
+.vm-msg--assistant b { color: var(--accent-3); }
+.vm-chat-input { padding: 10px; border-top: 1px solid var(--border); display: flex; flex-direction: column; gap: 8px; flex: none; }
 
 /* ---- Welcome ---- */
 .welcome { max-width: 640px; margin: 12vh auto; padding: 0 24px; }
@@ -928,6 +959,42 @@ input:focus, textarea:focus, select:focus {
 .welcome .row { display: flex; }
 
 /* ---- Modal (Settings / model manager) ---- */
+/* Standalone status badge (parent only defines .status-chip; the modal uses
+   a bare .badge, so give it the same chip treatment). */
+.badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 3px 9px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--surface-muted);
+  color: var(--accent);
+  font-size: 0.66rem;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+}
+
+/* Modal buttons: the parent reset strips button chrome, so the modal's bare
+   <button>/.small/.secondary/.danger need their own themed style. */
+.modal button {
+  padding: 7px 12px;
+  border: 1px solid var(--border);
+  clip-path: var(--clip-sm);
+  background: linear-gradient(135deg, var(--accent), var(--accent-2));
+  color: #061018;
+  font-family: Orbitron, monospace;
+  font-size: 0.66rem;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  transition: transform 160ms ease, box-shadow 160ms ease, opacity 160ms ease;
+}
+.modal button:hover:not(:disabled) { transform: translateY(-1px); box-shadow: var(--glow-cyan); }
+.modal button:disabled { opacity: 0.4; cursor: not-allowed; }
+.modal button.secondary { background: var(--surface-strong); color: var(--text); }
+.modal button.danger { background: var(--surface-strong); color: var(--accent-2); border-color: rgba(255, 61, 242, 0.4); }
+.modal button.small { padding: 4px 9px; font-size: 0.6rem; }
+
 .modal-backdrop {
   position: fixed; inset: 0; z-index: 50;
   display: flex; align-items: center; justify-content: center;
