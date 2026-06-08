@@ -62,6 +62,10 @@ interface ChatMessage {
 export class OpenRouterClient {
   private apiKey: string;
   private baseUrl: string;
+  // z.ai is a separate OpenAI-compatible provider; a model entry prefixed
+  // "zai:" routes there (own base URL + key) instead of OpenRouter.
+  private zaiKey: string;
+  private zaiBaseUrl: string;
   // Ordered fallback list; the first is the primary model.
   readonly models: string[];
 
@@ -71,8 +75,18 @@ export class OpenRouterClient {
       process.env[name] ?? dotenv[name] ?? fallback;
     this.apiKey = pick("OPENROUTER_API_KEY");
     this.baseUrl = pick("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1").replace(/\/+$/, "");
+    this.zaiKey = pick("ZAI_API_KEY");
+    this.zaiBaseUrl = pick("ZAI_BASE_URL", "https://api.z.ai/api/paas/v4").replace(/\/+$/, "");
     const raw = pick("OPENROUTER_MODEL", "openai/gpt-4o-mini");
     this.models = opts.models ?? raw.split(",").map((m) => m.trim()).filter(Boolean);
+  }
+
+  // Resolve which provider a model entry targets. "zai:glm-4.6" -> z.ai.
+  private resolve(model: string): { url: string; key: string; model: string; openrouter: boolean } {
+    if (model.startsWith("zai:")) {
+      return { url: this.zaiBaseUrl, key: this.zaiKey, model: model.slice(4), openrouter: false };
+    }
+    return { url: this.baseUrl, key: this.apiKey, model, openrouter: true };
   }
 
   get model(): string {
@@ -129,25 +143,30 @@ export class OpenRouterClient {
     // never burn time re-hitting a model that just failed. The session breaker
     // then skips it entirely after MAX_MODEL_FAILURES.
     const maxRetries = 1;
+    const target = this.resolve(model);
     const body = JSON.stringify({
-      model,
+      model: target.model,
       messages,
       max_tokens: opts.maxTokens ?? 2048,
       temperature: opts.temperature ?? 0.3,
     });
+    if (!target.key) throw new Error(`no API key configured for ${target.openrouter ? "OpenRouter" : "z.ai"}`);
     let lastErr = "";
     for (let attempt = 0; attempt < maxRetries; attempt++) {
       const controller = new AbortController();
       const timer = setTimeout(() => controller.abort(), timeoutS * 1000);
       try {
-        const resp = await fetch(`${this.baseUrl}/chat/completions`, {
+        const headers: Record<string, string> = {
+          Authorization: `Bearer ${target.key}`,
+          "Content-Type": "application/json",
+        };
+        if (target.openrouter) {
+          headers["HTTP-Referer"] = "https://optimaize.local/videomaker";
+          headers["X-Title"] = "OptimAIze-VideoMaker";
+        }
+        const resp = await fetch(`${target.url}/chat/completions`, {
           method: "POST",
-          headers: {
-            Authorization: `Bearer ${this.apiKey}`,
-            "Content-Type": "application/json",
-            "HTTP-Referer": "https://optimaize.local/videomaker",
-            "X-Title": "OptimAIze-VideoMaker",
-          },
+          headers,
           body,
           signal: controller.signal,
         });
