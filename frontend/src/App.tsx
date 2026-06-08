@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import Editor from "@monaco-editor/react";
-import { api, type Project, type FileEntry } from "./lib/api";
+import { api, type Project, type FileEntry, type SkillInfo } from "./lib/api";
 
 // Recursively flatten the project's src tree into a sorted file list.
 async function loadFiles(projectId: string): Promise<string[]> {
@@ -34,6 +34,7 @@ export function App() {
   const [chatInput, setChatInput] = useState("");
   const [busy, setBusy] = useState(false);
   const [studioUrl, setStudioUrl] = useState<string | null>(null);
+  const [showSettings, setShowSettings] = useState(false);
   const pollRef = useRef<number | null>(null);
 
   // ---- create / new ----
@@ -150,7 +151,10 @@ export function App() {
         <ConceptBar onGenerate={generate} busy={busy || project.state === "generating" || project.state === "rendering"} />
         <button onClick={launchStudio} disabled={project.state !== "ready"}>Live preview</button>
         <button onClick={exportVideo} disabled={busy || project.state !== "ready"}>Export mp4</button>
+        <button className="secondary" onClick={() => setShowSettings(true)}>Settings</button>
       </header>
+
+      {showSettings && <SettingsPanel onClose={() => setShowSettings(false)} />}
 
       <div className="layout">
         {/* Left: file tree + editor */}
@@ -266,6 +270,65 @@ function ConceptBar({ onGenerate, busy }: { onGenerate: (c: string) => void; bus
       <button onClick={() => onGenerate(concept)} disabled={busy}>
         {busy ? "Generating…" : "Generate video"}
       </button>
+    </div>
+  );
+}
+
+// Settings: shows the active video-skill given to the LLM (name, description,
+// the always-on core size, and the on-demand rules). Lets the user verify what
+// domain knowledge the model is steered with, and read any rule.
+function SettingsPanel({ onClose }: { onClose: () => void }) {
+  const [skill, setSkill] = useState<SkillInfo | null>(null);
+  const [openRule, setOpenRule] = useState<{ name: string; content: string } | null>(null);
+
+  useEffect(() => {
+    void api.skills().then((r) => setSkill(r.skills[0] ?? null)).catch(() => setSkill(null));
+  }, []);
+
+  return (
+    <div className="modal-backdrop" onClick={onClose}>
+      <div className="modal" onClick={(e) => e.stopPropagation()}>
+        <div className="modal-head">
+          <h2>Settings · LLM Skills</h2>
+          <button className="small secondary" onClick={onClose}>Close</button>
+        </div>
+        {!skill ? (
+          <p className="muted">Loading…</p>
+        ) : !skill.available ? (
+          <p className="muted">No skill installed.</p>
+        ) : (
+          <div className="skill">
+            <div className="skill-row"><b>{skill.name}</b> <span className="badge">active</span></div>
+            <p className="muted">{skill.description}</p>
+            <div className="muted small">
+              Always-on core: {skill.core_chars.toLocaleString()} chars · injected into every authoring/editing prompt.
+            </div>
+            <div className="muted small mono">{skill.path}</div>
+            <h3>On-demand rules ({skill.rules.length})</h3>
+            <p className="muted small">Loaded per scene by topic. Click to view.</p>
+            <div className="rule-list">
+              {skill.rules.map((rname) => (
+                <span
+                  key={rname}
+                  className="rule-chip"
+                  onClick={() => void api.skillRule(rname).then(setOpenRule).catch(() => {})}
+                >
+                  {rname.replace(/\.md$/, "")}
+                </span>
+              ))}
+            </div>
+            {openRule && (
+              <div className="rule-view">
+                <div className="modal-head">
+                  <b>{openRule.name}</b>
+                  <button className="small secondary" onClick={() => setOpenRule(null)}>×</button>
+                </div>
+                <pre>{openRule.content}</pre>
+              </div>
+            )}
+          </div>
+        )}
+      </div>
     </div>
   );
 }

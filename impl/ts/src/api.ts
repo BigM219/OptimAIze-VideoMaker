@@ -10,6 +10,7 @@ import path from "node:path";
 import { getProjectStore } from "./projects.js";
 import { generateConcept, chatEdit } from "./director.js";
 import { getSandboxPolicy, policyToWire } from "./policy.js";
+import { skillInfo, skillRule } from "./skills.js";
 import { WorkError } from "./types.js";
 
 const SERVICE = "OptimAIze VideoMaker API";
@@ -72,6 +73,17 @@ export function buildApp(webDir: string): Hono {
     c.json({ ok: true, service: SERVICE, version: VERSION, platform: process.platform }),
   );
   vm.get("/runtime-config", (c) => c.json({ policy: policyToWire(getSandboxPolicy()) }));
+
+  // Skills surfaced for the settings/config UI: what domain knowledge the LLM
+  // is given. The skill lives at .optimaize/skills/video-skills.
+  vm.get("/skills", (c) => c.json({ skills: [skillInfo()] }));
+  vm.get("/skills/rule", (c) => {
+    const name = c.req.query("name");
+    if (!name) return c.json({ detail: "name is required" }, 400);
+    const body = skillRule(name);
+    if (body === null) return c.json({ detail: "rule not found" }, 404);
+    return c.json({ name, content: body });
+  });
 
   const store = getProjectStore();
 
