@@ -1,0 +1,6 @@
+optimaize-videomaker.exe
+*.exe
+.env
+.env.*
+!.env.example
+*.log
