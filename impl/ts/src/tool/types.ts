@@ -44,6 +44,9 @@ export interface ToolDef<A = Record<string, unknown>> {
   id: string;
   description: string;
   parameters: Record<string, ToolParamSpec>;
+  // true if this tool changes project files — the director runs incremental
+  // diagnostics (tsc) once per turn when any mutating tool ran (see §8).
+  mutating?: boolean;
   // Throw a ToolValidationError (message shown to the model) on bad args.
   validate(args: Record<string, unknown>): A;
   execute(args: A, ctx: ToolContext): Promise<ToolResult>;
