@@ -1,0 +1,15 @@
+# Node
+node_modules/
+dist/
+# Secrets
+.env
+.env.*
+!.env.example
+# Build artifacts
+impl/go/optimaize-videomaker.exe
+*.exe
+*.log
+outputs/
+sandboxes/
+frontend/node_modules/
+frontend/dist/

@@ -1,0 +1,210 @@
+// VideoMaker project store + lifecycle + concept-driven director loop.
+// A "project" is one Remotion sandbox the user edits, previews (Studio), and
+// renders. The director loop is the headline: it turns a single concept into a
+// complete multi-scene educational video.
+
+import crypto from "node:crypto";
+import { getManager, type SandboxManager } from "./sandbox/manager.js";
+import { OpenRouterClient } from "./agent/llm-client.js";
+
+export type ProjectState = "pending" | "scaffolding" | "ready" | "generating" | "rendering" | "failed";
+
+export interface ProjectStep {
+  index: number;
+  timestamp: number;
+  phase: string;
+  detail: string;
+}
+
+export interface Project {
+  id: string;
+  sandboxId: string | null;
+  prompt: string;
+  requirements: string;
+  goals: string;
+  state: ProjectState;
+  studioUrl: string | null;
+  studioPort: number | null;
+  studioPid: number | null;
+  storyboard: Storyboard | null;
+  exportPath: string | null;
+  error: string | null;
+  steps: ProjectStep[];
+  chat: Array<{ role: string; content: string }>;
+  createdAt: number;
+  updatedAt: number;
+}
+
+export interface Scene {
+  id: string; // PascalCase component id, e.g. "TitleScene"
+  title: string;
+  durationInFrames: number;
+  narration: string;
+  visual: string;
+}
+export interface Storyboard {
+  title: string;
+  fps: number;
+  width: number;
+  height: number;
+  scenes: Scene[];
+}
+
+const STUDIO_PORT_BASE = 3100;
+
+export class ProjectStore {
+  private projects = new Map<string, Project>();
+  private mgr: SandboxManager;
+  private nextStudioPort = STUDIO_PORT_BASE;
+
+  constructor(mgr?: SandboxManager) {
+    this.mgr = mgr ?? getManager();
+  }
+
+  manager(): SandboxManager {
+    return this.mgr;
+  }
+
+  get(id: string): Project {
+    const p = this.projects.get(id);
+    if (!p) throw new Error(`Project not found: ${id}`);
+    return p;
+  }
+  list(): Project[] {
+    return [...this.projects.values()].sort((a, b) => b.createdAt - a.createdAt);
+  }
+  allocStudioPort(): number {
+    return this.nextStudioPort++;
+  }
+
+  private step(p: Project, phase: string, detail: string): void {
+    p.steps.push({ index: p.steps.length, timestamp: Date.now() / 1000, phase, detail });
+    p.updatedAt = Date.now() / 1000;
+  }
+
+  create(prompt: string, requirements: string, goals: string): Project {
+    const now = Date.now() / 1000;
+    const p: Project = {
+      id: `prj_${crypto.randomBytes(6).toString("hex")}`,
+      sandboxId: null,
+      prompt,
+      requirements,
+      goals,
+      state: "pending",
+      studioUrl: null,
+      studioPort: null,
+      studioPid: null,
+      storyboard: null,
+      exportPath: null,
+      error: null,
+      steps: [],
+      chat: [],
+      createdAt: now,
+      updatedAt: now,
+    };
+    this.projects.set(p.id, p);
+    void this.scaffold(p.id);
+    return p;
+  }
+
+  // Scaffold a blank Remotion project + install deps in a fresh sandbox.
+  private async scaffold(id: string): Promise<void> {
+    const p = this.get(id);
+    try {
+      p.state = "scaffolding";
+      const info = this.mgr.create({ backend: "process" });
+      p.sandboxId = info.sandboxId;
+      const backend = this.mgr.backendFor(info.sandboxId);
+
+      this.step(p, "scaffold", "npx create-video --blank");
+      const scaffold = await backend.exec(info.sandboxId, "npx --yes create-video@latest --yes --blank .", { timeoutS: 600 });
+      if (scaffold.exitCode !== 0) throw new Error(`scaffold failed: ${scaffold.stderr.slice(0, 300)}`);
+
+      this.step(p, "install", "npm install");
+      const install = await backend.exec(info.sandboxId, "npm install --no-audit --no-fund", { timeoutS: 1200 });
+      if (install.exitCode !== 0) throw new Error(`npm install failed: ${install.stderr.slice(0, 300)}`);
+
+      p.state = "ready";
+      this.step(p, "ready", "Project scaffolded and dependencies installed.");
+    } catch (e) {
+      p.state = "failed";
+      p.error = String((e as Error).message ?? e);
+      this.step(p, "error", p.error);
+    }
+  }
+
+  // Launch Remotion Studio (idempotent) and return the URL.
+  launchStudio(id: string): { url: string; port: number } {
+    const p = this.get(id);
+    if (!p.sandboxId) throw new Error("Project has no sandbox yet.");
+    if (p.studioUrl && p.studioPort) return { url: p.studioUrl, port: p.studioPort };
+    const port = this.allocStudioPort();
+    const backend = this.mgr.backendFor(p.sandboxId);
+    const pid = backend.spawnDaemon(
+      p.sandboxId,
+      `npx --no-install remotion studio --port ${port} --no-open`,
+    );
+    p.studioPort = port;
+    p.studioPid = pid;
+    p.studioUrl = `http://127.0.0.1:${port}`;
+    this.step(p, "studio", `Remotion Studio launched on port ${port} (pid ${pid}).`);
+    return { url: p.studioUrl, port };
+  }
+
+  // Files (delegate to the sandbox backend's jailed file ops).
+  listFiles(id: string, rel = "."): unknown {
+    const p = this.get(id);
+    if (!p.sandboxId) throw new Error("No sandbox.");
+    return this.mgr.backendFor(p.sandboxId).list(p.sandboxId, rel);
+  }
+  readFile(id: string, rel: string): string {
+    const p = this.get(id);
+    if (!p.sandboxId) throw new Error("No sandbox.");
+    return this.mgr.backendFor(p.sandboxId).readFile(p.sandboxId, rel, false) as string;
+  }
+  writeFile(id: string, rel: string, content: string): unknown {
+    const p = this.get(id);
+    if (!p.sandboxId) throw new Error("No sandbox.");
+    return this.mgr.backendFor(p.sandboxId).writeFile(p.sandboxId, rel, content);
+  }
+  rawPath(id: string, rel: string): string {
+    const p = this.get(id);
+    if (!p.sandboxId) throw new Error("No sandbox.");
+    return this.mgr.backendFor(p.sandboxId).rawPath(p.sandboxId, rel);
+  }
+
+  // Collect all source files under src/ for full chat/director context.
+  private collectSource(id: string): Record<string, string> {
+    const p = this.get(id);
+    if (!p.sandboxId) return {};
+    const backend = this.mgr.backendFor(p.sandboxId);
+    const out: Record<string, string> = {};
+    const walk = (rel: string): void => {
+      let entries: Array<{ path: string; isDir: boolean }> = [];
+      try {
+        entries = backend.list(p.sandboxId!, rel) as Array<{ path: string; isDir: boolean }>;
+      } catch {
+        return;
+      }
+      for (const e of entries) {
+        if (e.isDir) {
+          if (!e.path.includes("node_modules")) walk(e.path);
+        } else if (/\.(tsx?|css|json)$/.test(e.path) && !e.path.includes("node_modules")) {
+          try {
+            out[e.path] = backend.readFile(p.sandboxId!, e.path, false) as string;
+          } catch {
+            /* skip */
+          }
+        }
+      }
+    };
+    walk("src");
+    return out;
+  }
+}
+
+let store: ProjectStore | null = null;
+export function getProjectStore(): ProjectStore {
+  if (!store) store = new ProjectStore();
+  return store;
+}

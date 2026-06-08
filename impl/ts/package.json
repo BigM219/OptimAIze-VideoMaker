@@ -1,0 +1,26 @@
+{
+  "name": "optimaize-videomaker-ts",
+  "version": "0.1.0",
+  "description": "OptimAIze-VideoMaker harness - TypeScript backend",
+  "type": "module",
+  "private": true,
+  "engines": { "node": ">=22" },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "start": "node dist/server.js",
+    "serve": "node --experimental-strip-types src/server.ts"
+  },
+  "dependencies": {
+    "@hono/node-server": "^1.13.7",
+    "hono": "^4.6.14",
+    "koffi": "^2.9.0",
+    "yauzl": "^3.2.0",
+    "yazl": "^3.3.1"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.2",
+    "@types/yauzl": "^2.10.3",
+    "@types/yazl": "^2.4.6",
+    "typescript": "^5.7.2"
+  }
+}
