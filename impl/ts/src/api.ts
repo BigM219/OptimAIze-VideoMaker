@@ -63,6 +63,21 @@ export function buildApp(webDir: string): Hono {
       return c.text("OptimAIze-VideoMaker. Frontend not built yet.", 200);
     }
   });
+  // Serve built frontend assets (Vite emits /assets/*.js + *.css).
+  app.get("/assets/*", (c) => {
+    const rel = c.req.path.replace(/^\/+/, "");
+    const abs = path.join(webDir, rel);
+    // Keep the resolved path inside webDir (no traversal).
+    if (!path.resolve(abs).startsWith(path.resolve(webDir))) return c.text("not found", 404);
+    try {
+      const data = fs.readFileSync(abs);
+      const ext = abs.toLowerCase().split(".").pop() ?? "";
+      const type = ext === "js" ? "text/javascript" : ext === "css" ? "text/css" : ext === "map" ? "application/json" : "application/octet-stream";
+      return new Response(data, { status: 200, headers: { "Content-Type": type } });
+    } catch {
+      return c.text("not found", 404);
+    }
+  });
 
   const vm = new Hono();
   vm.use("*", async (c, next) => {

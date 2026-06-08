@@ -14,6 +14,21 @@ export interface ProjectStep {
   timestamp: number;
   phase: string;
   detail: string;
+  // Optional rich fields so the UI can render a coding-agent transcript:
+  // what the model wrote, what command ran, and its output.
+  kind?: "plan" | "write_file" | "command" | "command_output" | "repair" | "info" | "error";
+  path?: string; // write_file: the file path
+  content?: string; // write_file: the code written (capped)
+  command?: string; // command: the shell command
+  exitCode?: number; // command_output: process exit code
+  output?: string; // command_output: trimmed stdout+stderr (capped)
+}
+
+// Cap large transcript payloads so the polled project JSON stays bounded.
+export const STEP_FIELD_CAP = 4000;
+export function capStep(s: string | undefined, n = STEP_FIELD_CAP): string | undefined {
+  if (s === undefined) return undefined;
+  return s.length > n ? s.slice(0, n) + `\n… (${s.length - n} more chars)` : s;
 }
 
 export interface Project {
@@ -77,8 +92,16 @@ export class ProjectStore {
     return this.nextStudioPort++;
   }
 
-  private step(p: Project, phase: string, detail: string): void {
-    p.steps.push({ index: p.steps.length, timestamp: Date.now() / 1000, phase, detail });
+  private step(p: Project, phase: string, detail: string, extra: Partial<ProjectStep> = {}): void {
+    p.steps.push({
+      index: p.steps.length,
+      timestamp: Date.now() / 1000,
+      phase,
+      detail,
+      ...extra,
+      content: capStep(extra.content),
+      output: capStep(extra.output),
+    });
     p.updatedAt = Date.now() / 1000;
   }
 
@@ -116,12 +139,14 @@ export class ProjectStore {
       p.sandboxId = info.sandboxId;
       const backend = this.mgr.backendFor(info.sandboxId);
 
-      this.step(p, "scaffold", "npx create-video --blank");
+      this.step(p, "scaffold", "Scaffolding a blank Remotion project", { kind: "command", command: "npx create-video@latest --blank ." });
       const scaffold = await backend.exec(info.sandboxId, "npx --yes create-video@latest --yes --blank .", { timeoutS: 600 });
+      this.step(p, "scaffold", "create-video finished", { kind: "command_output", exitCode: scaffold.exitCode, output: scaffold.stdout + scaffold.stderr });
       if (scaffold.exitCode !== 0) throw new Error(`scaffold failed: ${scaffold.stderr.slice(0, 300)}`);
 
-      this.step(p, "install", "npm install");
+      this.step(p, "install", "Installing dependencies", { kind: "command", command: "npm install" });
       const install = await backend.exec(info.sandboxId, "npm install --no-audit --no-fund", { timeoutS: 1200 });
+      this.step(p, "install", "npm install finished", { kind: "command_output", exitCode: install.exitCode, output: install.stdout + install.stderr });
       if (install.exitCode !== 0) throw new Error(`npm install failed: ${install.stderr.slice(0, 300)}`);
 
       p.state = "ready";
