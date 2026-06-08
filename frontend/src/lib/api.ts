@@ -44,6 +44,14 @@ export interface FileEntry {
   size: number;
   modified: number;
 }
+export interface SkillInfo {
+  available: boolean;
+  name: string;
+  description: string;
+  path: string;
+  core_chars: number;
+  rules: string[];
+}
 
 async function j<T>(r: Response): Promise<T> {
   if (!r.ok) throw new Error((await r.text()) || `HTTP ${r.status}`);
@@ -70,6 +78,8 @@ export const api = {
       j<{ ok: boolean; note: string; edited: string[]; project: Project }>(r),
     ),
   exportVideo: (id: string) => fetch(`${BASE}/projects/${id}/export`, { method: "POST" }).then((r) => j<{ ok: boolean; export_path?: string; detail?: string }>(r)),
+  skills: () => fetch(`${BASE}/skills`).then((r) => j<{ skills: SkillInfo[] }>(r)),
+  skillRule: (name: string) => fetch(`${BASE}/skills/rule?name=${encodeURIComponent(name)}`).then((r) => j<{ name: string; content: string }>(r)),
   rawUrl: (id: string, path: string) => `${BASE}/projects/${id}/files/raw?path=${encodeURIComponent(path)}&t=${Date.now()}`,
   exportRawUrl: (id: string) => `${BASE}/projects/${id}/export/raw?t=${Date.now()}`,
 };
