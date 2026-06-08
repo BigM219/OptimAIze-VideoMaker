@@ -2,12 +2,20 @@
 
 const BASE = "/api/v1/vm";
 
+export type SceneStatus = "pending" | "writing" | "ready" | "error";
 export interface Scene {
   id: string;
   title: string;
   durationInFrames: number;
   narration: string;
   visual: string;
+  // Per-scene lifecycle. Each scene is its own Remotion <Composition>, rendered
+  // live from code in Studio (no per-scene mp4). "ready" = code written and
+  // registered in Studio. TS serializes camelCase (renderError); Go uses
+  // snake_case — support both.
+  status?: SceneStatus;
+  renderError?: string;
+  render_error?: string;
 }
 export interface Storyboard {
   title: string;

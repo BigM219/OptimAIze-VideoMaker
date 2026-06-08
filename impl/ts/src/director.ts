@@ -58,12 +58,40 @@ Follow this skill:
 ${core}${rules ? `\n\nRelevant rules for this scene:${rules}` : ""}`;
 }
 
-function rootSource(sb: Storyboard): string {
-  const imports = sb.scenes.map((s) => `import {${s.id}} from './scenes/${s.id}';`).join("\n");
-  const total = sb.scenes.reduce((n, s) => n + s.durationInFrames, 0);
-  const series = sb.scenes
+// Build Root.tsx registering ONE <Composition> per scene plus the combined
+// "Video" composition, so Remotion Studio lists every slide and renders each
+// directly from code (live, hot-reload). Only the scenes passed in are
+// imported/registered, so Studio hot-reloads cleanly as slides are written one
+// at a time — a scene whose file doesn't exist yet is simply absent.
+function rootSource(sb: Storyboard, scenes: Scene[] = sb.scenes): string {
+  const imports = scenes.map((s) => `import {${s.id}} from './scenes/${s.id}';`).join("\n");
+  const total = scenes.reduce((n, s) => n + s.durationInFrames, 0);
+  const series = scenes
     .map((s) => `      <Series.Sequence durationInFrames={${s.durationInFrames}}>\n        <${s.id} />\n      </Series.Sequence>`)
     .join("\n");
+  const perScene = scenes
+    .map(
+      (s) => `    <Composition
+      id="${s.id}"
+      component={${s.id}}
+      durationInFrames={${s.durationInFrames}}
+      fps={${sb.fps}}
+      width={${sb.width}}
+      height={${sb.height}}
+    />`,
+    )
+    .join("\n");
+  const combined =
+    scenes.length > 0
+      ? `    <Composition
+      id="Video"
+      component={Video}
+      durationInFrames={${total}}
+      fps={${sb.fps}}
+      width={${sb.width}}
+      height={${sb.height}}
+    />`
+      : "";
   return `import React from 'react';
 import {Composition, Series} from 'remotion';
 ${imports}
@@ -78,14 +106,9 @@ ${series}
 
 export const RemotionRoot: React.FC = () => {
   return (
-    <Composition
-      id="Video"
-      component={Video}
-      durationInFrames={${total}}
-      fps={${sb.fps}}
-      width={${sb.width}}
-      height={${sb.height}}
-    />
+    <>
+${[combined, perScene].filter(Boolean).join("\n")}
+    </>
   );
 };
 `;
@@ -153,14 +176,33 @@ export async function generateConcept(
     sb.width = sb.width || 1920;
     sb.height = sb.height || 1080;
     if (!Array.isArray(sb.scenes) || sb.scenes.length === 0) throw new Error("Storyboard has no scenes.");
+    for (const s of sb.scenes) s.status = "pending";
     p.storyboard = sb;
     stepLog("storyboard", `Storyboard: ${sb.title} — ${sb.scenes.length} scenes`, {
       kind: "plan",
       content: sb.scenes.map((s, i) => `${i + 1}. ${s.id} (${s.durationInFrames}f) — ${s.title}\n   ${s.narration}`).join("\n"),
     });
 
-    // 2. Author each scene component.
+    // Studio renders every slide live from code, so launch it up front and
+    // start with an empty Root. As each scene is written we rewrite Root to
+    // register the scenes-so-far; Studio hot-reloads and the new slide appears.
+    const backend = store.manager().backendFor(p.sandboxId);
+    store.writeFile(projectId, "src/index.ts", indexSource());
+    store.writeFile(projectId, "src/Root.tsx", rootSource(sb, []));
+    try {
+      const s = store.launchStudio(projectId);
+      stepLog("studio", `Live Studio on ${s.url} — slides appear as they're written.`, { kind: "info" });
+    } catch (e) {
+      stepLog("studio", `Studio launch deferred: ${String((e as Error).message ?? e)}`, { kind: "info" });
+    }
+
+    // 2. Author each scene component. After writing each one, register the
+    //    scenes-written-so-far in Root so Studio hot-reloads and that slide
+    //    becomes reviewable live — no per-scene mp4, the slide IS the code.
+    const written: Scene[] = [];
     for (const scene of sb.scenes) {
+      scene.status = "writing";
+      p.updatedAt = Date.now() / 1000;
       // Pull in the best-practice rules relevant to this scene's visual/title.
       const rules = skillRulesFor(`${scene.title} ${scene.visual} ${scene.narration}`);
       const resp = await client.chat(
@@ -179,19 +221,22 @@ export async function generateConcept(
       const code = extractTsx(resp);
       store.writeFile(projectId, `src/scenes/${scene.id}.tsx`, code);
       stepLog("scene", `Wrote src/scenes/${scene.id}.tsx`, { kind: "write_file", path: `src/scenes/${scene.id}.tsx`, content: code });
+      // Register this slide in Studio (hot-reload shows it immediately).
+      written.push(scene);
+      store.writeFile(projectId, "src/Root.tsx", rootSource(sb, written));
+      scene.status = "ready";
+      p.updatedAt = Date.now() / 1000;
     }
 
-    // 3. Assemble Root + index.
+    // 3. Final Root with every scene + the combined Video composition.
     const rootCode = rootSource(sb);
     store.writeFile(projectId, "src/Root.tsx", rootCode);
-    store.writeFile(projectId, "src/index.ts", indexSource());
     stepLog("assemble", "Wrote src/Root.tsx", { kind: "write_file", path: "src/Root.tsx", content: rootCode });
 
     // 4. Self-check render, then an agentic repair loop: keep feeding the build
     //    error back to the model (with full project + running history) and keep
     //    fixing until it renders or we hit a hard ceiling — the way Claude /
     //    Codex / Antigravity iterate on their own errors instead of giving up.
-    const backend = store.manager().backendFor(p.sandboxId);
     p.state = "rendering";
     const renderCmd = "npx --no-install remotion render Video out/video.mp4";
     stepLog("render", renderCmd, { kind: "command", command: renderCmd });
