@@ -13,7 +13,7 @@ import (
 // builtin tools, in catalog order. Domain tools are appended via NewRegistry's
 // extra arg (the projects package supplies them).
 func builtinTools() []Def {
-	return []Def{ReadTool, WriteTool, EditTool, ListFilesTool, BashTool, GrepTool, GlobTool, RenderSceneTool, ReadSkillRuleTool}
+	return []Def{ReadTool, WriteTool, EditTool, ListFilesTool, BashTool, GrepTool, GlobTool, RenderSceneTool, ReadSkillRuleTool, WebFetchTool, WebSearchTool}
 }
 
 type Registry struct {
