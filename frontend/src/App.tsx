@@ -274,11 +274,11 @@ function Welcome({ onMake, busy }: { onMake: (request: string) => void; busy: bo
         placeholder={example}
         onChange={(e) => setRequest(e.target.value)}
       />
-      <div className="row" style={{ marginTop: 12, gap: 8 }}>
-        <button onClick={() => onMake(request.trim() || example)} disabled={busy}>
+      <div className="row" style={{ marginTop: 16, gap: 10 }}>
+        <button className="primary-action" onClick={() => onMake(request.trim() || example)} disabled={busy}>
           {busy ? "Đang tạo…" : "Tạo video"}
         </button>
-        <button className="secondary" onClick={() => setRequest(example)} disabled={busy}>
+        <button className="secondary-action" onClick={() => setRequest(example)} disabled={busy}>
           Dùng ví dụ
         </button>
       </div>
@@ -291,7 +291,7 @@ function ConceptBar({ onGenerate, busy }: { onGenerate: (c: string) => void; bus
   return (
     <div className="conceptbar">
       <input value={concept} onChange={(e) => setConcept(e.target.value)} placeholder="Concept for a complete video…" />
-      <button onClick={() => onGenerate(concept)} disabled={busy}>
+      <button className="primary-action vm-mini" onClick={() => onGenerate(concept)} disabled={busy}>
         {busy ? "Generating…" : "Generate video"}
       </button>
     </div>
