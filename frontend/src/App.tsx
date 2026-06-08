@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import Editor from "@monaco-editor/react";
 import { api, type Project, type FileEntry, type SkillInfo, type ModelEntry } from "./lib/api";
 import { Transcript } from "./components/Transcript";
+import { SlideStudio } from "./components/SlideStudio";
 
 // Recursively flatten the project's src tree into a sorted file list.
 async function loadFiles(projectId: string): Promise<string[]> {
@@ -69,6 +70,9 @@ export function App() {
         const p = await api.getProject(project.id);
         setProject(p);
         setChat(p.chat);
+        // The director launches Studio itself; pick up its URL so the slide
+        // deck can deep-link to each composition without a manual click.
+        if (p.studio_url) setStudioUrl((u) => u ?? p.studio_url);
         if (p.state === "ready" || p.state === "failed") {
           setFiles(await loadFiles(p.id));
         }
@@ -179,22 +183,16 @@ export function App() {
           <Transcript steps={project.steps} state={project.state} error={project.error} />
         </section>
 
-        {/* Center: live preview (Remotion Studio) / rendered video */}
+        {/* Center: slide deck — each scene is a live Studio composition */}
         <section className="vm-pane vm-pane--preview">
-          <div className="vm-pane-head"><span className="eyebrow">Preview</span></div>
+          <div className="vm-pane-head"><span className="eyebrow">Slides</span></div>
           <div className="vm-preview-body">
-            {studioUrl ? (
-              <iframe title="preview" src={studioUrl} className="vm-studio" />
-            ) : project.export_path ? (
-              <div className="vm-preview-fallback">
-                <video src={api.rawUrl(project.id, project.export_path)} controls />
-                <p className="muted small">Rendered video. Click “Live preview” for the interactive Studio.</p>
-              </div>
-            ) : (
-              <div className="muted pad vm-center">
-                {working ? "Building your video — watch the agent process on the left." : "Launch “Live preview” for the Studio, or describe a video to generate."}
-              </div>
-            )}
+            <SlideStudio
+              storyboard={project.storyboard}
+              studioUrl={studioUrl}
+              onLaunchStudio={launchStudio}
+              launching={busy}
+            />
           </div>
         </section>
 

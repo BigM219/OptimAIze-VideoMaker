@@ -50,12 +50,21 @@ export interface Project {
   updatedAt: number;
 }
 
+export type SceneStatus = "pending" | "writing" | "ready" | "error";
+
 export interface Scene {
   id: string; // PascalCase component id, e.g. "TitleScene"
   title: string;
   durationInFrames: number;
   narration: string;
   visual: string;
+  // Per-scene lifecycle so the UI can review each slide live in Studio as soon
+  // as its code is written. Each scene is its own Remotion <Composition>, so
+  // Studio renders it directly from code (hot-reload) — no per-scene mp4.
+  // "ready" = code written and registered in Studio; "error" = compile/repair
+  // pending (set by the repair loop) without blocking the other slides.
+  status?: SceneStatus;
+  renderError?: string; // trimmed error when status === "error"
 }
 export interface Storyboard {
   title: string;
