@@ -22,9 +22,21 @@ var retryCodes = map[int]bool{429: true, 500: true, 502: true, 503: true, 529: t
 type LLMClient struct {
 	apiKey  string
 	baseURL string
+	// z.ai is a separate OpenAI-compatible provider; a model entry prefixed
+	// "zai:" routes there (own base URL + key) instead of OpenRouter.
+	zaiKey     string
+	zaiBaseURL string
 	// Models is an ordered fallback list. The client tries each in turn until
 	// one returns a usable completion; only if all fail does Chat error out.
 	Models []string
+}
+
+// resolve picks the provider for a model entry. "zai:glm-4.6" -> z.ai.
+func (c *LLMClient) resolve(model string) (url, key, name string, openrouter bool) {
+	if strings.HasPrefix(model, "zai:") {
+		return c.zaiBaseURL, c.zaiKey, strings.TrimPrefix(model, "zai:"), false
+	}
+	return c.baseURL, c.apiKey, model, true
 }
 
 // Model reports the primary (first) model, for status/logging.
@@ -84,9 +96,11 @@ func NewLLMClient() *LLMClient {
 		}
 	}
 	return &LLMClient{
-		apiKey:  pick("OPENROUTER_API_KEY", ""),
-		baseURL: strings.TrimRight(pick("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1"), "/"),
-		Models:  models,
+		apiKey:     pick("OPENROUTER_API_KEY", ""),
+		baseURL:    strings.TrimRight(pick("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1"), "/"),
+		zaiKey:     pick("ZAI_API_KEY", ""),
+		zaiBaseURL: strings.TrimRight(pick("ZAI_BASE_URL", "https://api.z.ai/api/paas/v4"), "/"),
+		Models:     models,
 	}
 }
 
@@ -163,8 +177,15 @@ func resetBreaker() {
 
 // chatModel runs the retry loop for a single model.
 func (c *LLMClient) chatModel(model string, messages []ChatMessage, maxTokens int, temperature float64) (string, error) {
+	url, key, name, openrouter := c.resolve(model)
+	if key == "" {
+		if openrouter {
+			return "", errors.New("no OPENROUTER_API_KEY configured")
+		}
+		return "", errors.New("no ZAI_API_KEY configured")
+	}
 	body, _ := json.Marshal(map[string]any{
-		"model": model, "messages": messages, "max_tokens": maxTokens, "temperature": temperature,
+		"model": name, "messages": messages, "max_tokens": maxTokens, "temperature": temperature,
 	})
 	client := &http.Client{Timeout: 60 * time.Second}
 	// One attempt per model: the fallback list is the redundancy, and the
@@ -172,11 +193,13 @@ func (c *LLMClient) chatModel(model string, messages []ChatMessage, maxTokens in
 	maxRetries := 1
 	var lastErr string
 	for attempt := 0; attempt < maxRetries; attempt++ {
-		req, _ := http.NewRequest("POST", c.baseURL+"/chat/completions", bytes.NewReader(body))
-		req.Header.Set("Authorization", "Bearer "+c.apiKey)
+		req, _ := http.NewRequest("POST", url+"/chat/completions", bytes.NewReader(body))
+		req.Header.Set("Authorization", "Bearer "+key)
 		req.Header.Set("Content-Type", "application/json")
-		req.Header.Set("HTTP-Referer", "https://optimaize.local/work")
-		req.Header.Set("X-Title", "OptimAIze-Work")
+		if openrouter {
+			req.Header.Set("HTTP-Referer", "https://optimaize.local/videomaker")
+			req.Header.Set("X-Title", "OptimAIze-VideoMaker")
+		}
 		resp, err := client.Do(req)
 		if err != nil {
 			lastErr = err.Error()
