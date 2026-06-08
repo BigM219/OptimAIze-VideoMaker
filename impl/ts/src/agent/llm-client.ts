@@ -6,25 +6,41 @@
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { enabledChain } from "../models-config.js";
 
 const RETRY_CODES = new Set([429, 500, 502, 503, 529]);
 
-// Session circuit breaker: a model that fails MAX_MODEL_FAILURES times in this
-// process is "tripped" and skipped for the rest of the session, so we never burn
-// time retrying a model that is reliably down/rate-limited (e.g. a :free model
-// that always 429s). A success resets its counter. State is module-level because
-// each request constructs a fresh OpenRouterClient.
+// Session circuit breaker with a TIME-BASED cooldown. A model that fails
+// MAX_MODEL_FAILURES times is "tripped" and skipped — but only for COOLDOWN_MS,
+// after which it is given another chance. This avoids the trap where a brief
+// all-provider hiccup permanently disables every model for the rest of the
+// session (which left the later repair phase with nothing to call). A success
+// clears the counter. State is module-level because each request constructs a
+// fresh OpenRouterClient.
 const MAX_MODEL_FAILURES = 2;
+const COOLDOWN_MS = 60_000;
 const modelFailures = new Map<string, number>();
+const trippedUntil = new Map<string, number>();
 
 function isTripped(model: string): boolean {
-  return (modelFailures.get(model) ?? 0) >= MAX_MODEL_FAILURES;
+  const until = trippedUntil.get(model);
+  if (until === undefined) return false;
+  if (Date.now() >= until) {
+    // Cooldown elapsed: give the model another chance.
+    trippedUntil.delete(model);
+    modelFailures.delete(model);
+    return false;
+  }
+  return true;
 }
 function recordFailure(model: string): void {
-  modelFailures.set(model, (modelFailures.get(model) ?? 0) + 1);
+  const n = (modelFailures.get(model) ?? 0) + 1;
+  modelFailures.set(model, n);
+  if (n >= MAX_MODEL_FAILURES) trippedUntil.set(model, Date.now() + COOLDOWN_MS);
 }
 function recordSuccess(model: string): void {
   modelFailures.delete(model);
+  trippedUntil.delete(model);
 }
 
 export function llmBreakerState(): Record<string, number> {
@@ -69,22 +85,34 @@ export class OpenRouterClient {
   // Ordered fallback list; the first is the primary model.
   readonly models: string[];
 
+  private dotenv: Record<string, string>;
+
   constructor(opts: { models?: string[] } = {}) {
     const dotenv = loadDotenv();
+    this.dotenv = dotenv;
     const pick = (name: string, fallback = ""): string =>
       process.env[name] ?? dotenv[name] ?? fallback;
     this.apiKey = pick("OPENROUTER_API_KEY");
     this.baseUrl = pick("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1").replace(/\/+$/, "");
     this.zaiKey = pick("ZAI_API_KEY");
     this.zaiBaseUrl = pick("ZAI_BASE_URL", "https://api.z.ai/api/paas/v4").replace(/\/+$/, "");
-    const raw = pick("OPENROUTER_MODEL", "openai/gpt-4o-mini");
-    this.models = opts.models ?? raw.split(",").map((m) => m.trim()).filter(Boolean);
+    // Models come from the runtime-editable config (enabledChain), which falls
+    // back to the OPENROUTER_MODEL env list on first run.
+    this.models = opts.models ?? enabledChain();
+    if (this.models.length === 0) this.models = ["openrouter/owl-alpha"];
   }
 
-  // Resolve which provider a model entry targets. "zai:glm-4.6" -> z.ai.
+  // Resolve which provider a model entry targets. "zai:..." -> z.ai;
+  // "custom:<keyEnv>|<baseUrl>|<model>" -> an arbitrary OpenAI-compatible host.
   private resolve(model: string): { url: string; key: string; model: string; openrouter: boolean } {
     if (model.startsWith("zai:")) {
       return { url: this.zaiBaseUrl, key: this.zaiKey, model: model.slice(4), openrouter: false };
+    }
+    if (model.startsWith("custom:")) {
+      // Format: custom:<KEY_ENV>|<BASE_URL>|<MODEL_ID>
+      const [keyEnv, baseUrl, ...rest] = model.slice(7).split("|");
+      const key = process.env[keyEnv] ?? this.dotenv[keyEnv] ?? "";
+      return { url: (baseUrl ?? "").replace(/\/+$/, ""), key, model: rest.join("|"), openrouter: false };
     }
     return { url: this.baseUrl, key: this.apiKey, model, openrouter: true };
   }

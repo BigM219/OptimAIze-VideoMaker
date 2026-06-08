@@ -43,6 +43,18 @@ export const FadeIn = () => {
 CSS transitions or animations are FORBIDDEN - they will not render correctly.  
 Tailwind animation class names are FORBIDDEN - they will not render correctly.
 
+`interpolate()` only maps numbers. To animate a COLOR, use `interpolateColors()` — passing a hex/rgb string to `interpolate()` throws "is not a supported scale, translate, or rotate value" and breaks the render.
+
+```tsx
+import { useCurrentFrame, interpolateColors } from "remotion";
+
+const frame = useCurrentFrame();
+const color = interpolateColors(frame, [0, 30], ["#0a0a2e", "#1e3a8a"]);
+return <div style={{ backgroundColor: color }}>...</div>;
+```
+
+For a moving gradient, interpolate a numeric position/angle (a number) and build the gradient string from it — never interpolate the color stops directly.
+
 Place assets in the `public/` folder at your project root.
 
 Use `staticFile()` to reference files from the `public/` folder.
