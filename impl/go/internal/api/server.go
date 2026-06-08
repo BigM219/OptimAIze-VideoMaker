@@ -156,7 +156,7 @@ func (s *Server) route(w http.ResponseWriter, r *http.Request) {
 			ActiveFile string `json:"active_file"`
 		}
 		_ = json.NewDecoder(r.Body).Decode(&b)
-		note, edited, err := s.store.ChatEdit(id, b.Message, b.ActiveFile)
+		note, edited, err := s.store.ChatEditAgent(id, b.Message, b.ActiveFile)
 		if err != nil {
 			writeJSON(w, 500, map[string]string{"detail": err.Error()})
 			return
