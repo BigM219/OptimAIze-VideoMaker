@@ -4,7 +4,7 @@
 
 import { OpenRouterClient } from "./agent/llm-client.js";
 import { skillCore, skillRulesFor } from "./skills.js";
-import type { ProjectStore, Storyboard, Scene } from "./projects.js";
+import { capStep, type ProjectStore, type Storyboard, type Scene, type ProjectStep } from "./projects.js";
 import type { ExecResult } from "./types.js";
 
 function extractJson(text: string): string | null {
@@ -23,8 +23,16 @@ function extractJson(text: string): string | null {
 
 // Append a progress step to a project (module-level so the repair loop and the
 // generate loop share one timeline the UI polls).
-function pushStep(p: { steps: Array<{ index: number; timestamp: number; phase: string; detail: string }>; updatedAt: number }, phase: string, detail: string): void {
-  p.steps.push({ index: p.steps.length, timestamp: Date.now() / 1000, phase, detail });
+function pushStep(p: { steps: ProjectStep[]; updatedAt: number }, phase: string, detail: string, extra: Partial<ProjectStep> = {}): void {
+  p.steps.push({
+    index: p.steps.length,
+    timestamp: Date.now() / 1000,
+    phase,
+    detail,
+    ...extra,
+    content: capStep(extra.content),
+    output: capStep(extra.output),
+  });
   p.updatedAt = Date.now() / 1000;
 }
 
@@ -113,8 +121,16 @@ export async function generateConcept(
   if (!p.sandboxId) throw new Error("Project has no sandbox.");
   const client = new OpenRouterClient();
   p.state = "generating";
-  const stepLog = (phase: string, detail: string): void => {
-    p.steps.push({ index: p.steps.length, timestamp: Date.now() / 1000, phase, detail });
+  const stepLog = (phase: string, detail: string, extra: Partial<import("./projects.js").ProjectStep> = {}): void => {
+    p.steps.push({
+      index: p.steps.length,
+      timestamp: Date.now() / 1000,
+      phase,
+      detail,
+      ...extra,
+      content: capStep(extra.content),
+      output: capStep(extra.output),
+    });
     p.updatedAt = Date.now() / 1000;
   };
 
@@ -138,11 +154,13 @@ export async function generateConcept(
     sb.height = sb.height || 1080;
     if (!Array.isArray(sb.scenes) || sb.scenes.length === 0) throw new Error("Storyboard has no scenes.");
     p.storyboard = sb;
-    stepLog("storyboard", `${sb.scenes.length} scenes: ${sb.scenes.map((s) => s.id).join(", ")}`);
+    stepLog("storyboard", `Storyboard: ${sb.title} — ${sb.scenes.length} scenes`, {
+      kind: "plan",
+      content: sb.scenes.map((s, i) => `${i + 1}. ${s.id} (${s.durationInFrames}f) — ${s.title}\n   ${s.narration}`).join("\n"),
+    });
 
     // 2. Author each scene component.
     for (const scene of sb.scenes) {
-      stepLog("scene", `Writing src/scenes/${scene.id}.tsx`);
       // Pull in the best-practice rules relevant to this scene's visual/title.
       const rules = skillRulesFor(`${scene.title} ${scene.visual} ${scene.narration}`);
       const resp = await client.chat(
@@ -160,12 +178,14 @@ export async function generateConcept(
       );
       const code = extractTsx(resp);
       store.writeFile(projectId, `src/scenes/${scene.id}.tsx`, code);
+      stepLog("scene", `Wrote src/scenes/${scene.id}.tsx`, { kind: "write_file", path: `src/scenes/${scene.id}.tsx`, content: code });
     }
 
     // 3. Assemble Root + index.
-    stepLog("assemble", "Writing src/Root.tsx and src/index.ts");
-    store.writeFile(projectId, "src/Root.tsx", rootSource(sb));
+    const rootCode = rootSource(sb);
+    store.writeFile(projectId, "src/Root.tsx", rootCode);
     store.writeFile(projectId, "src/index.ts", indexSource());
+    stepLog("assemble", "Wrote src/Root.tsx", { kind: "write_file", path: "src/Root.tsx", content: rootCode });
 
     // 4. Self-check render, then an agentic repair loop: keep feeding the build
     //    error back to the model (with full project + running history) and keep
@@ -173,8 +193,10 @@ export async function generateConcept(
     //    Codex / Antigravity iterate on their own errors instead of giving up.
     const backend = store.manager().backendFor(p.sandboxId);
     p.state = "rendering";
-    stepLog("render", "Rendering the assembled video");
-    let render = await backend.exec(p.sandboxId, "npx --no-install remotion render Video out/video.mp4", { timeoutS: 1200 });
+    const renderCmd = "npx --no-install remotion render Video out/video.mp4";
+    stepLog("render", renderCmd, { kind: "command", command: renderCmd });
+    let render = await backend.exec(p.sandboxId, renderCmd, { timeoutS: 1200 });
+    stepLog("render", `Render exited ${render.exitCode}`, { kind: "command_output", exitCode: render.exitCode, output: render.stdout + "\n" + render.stderr });
 
     if (render.exitCode !== 0) {
       const ok = await repairLoop(store, projectId, client, backend, () =>
@@ -225,7 +247,7 @@ async function repairLoop(
   let noChangeStreak = 0;
 
   for (let turn = 1; turn <= MAX_REPAIR_TURNS; turn++) {
-    pushStep(p, "repair", `Fixing render error (turn ${turn}/${MAX_REPAIR_TURNS})`);
+    pushStep(p, "repair", `Diagnosing render error (turn ${turn}/${MAX_REPAIR_TURNS})`, { kind: "repair" });
     const fileBlock = Object.entries(collect(store, projectId))
       .map(([path, content]) => `// FILE: ${path}\n${content}`)
       .join("\n\n");
@@ -235,20 +257,22 @@ async function repairLoop(
     });
     const resp = await client.chat(trimRepair(messages), { maxTokens: 3000, temperature: 0.2 });
     messages.push({ role: "assistant", content: resp });
-    const edited = applyEdits(store, projectId, resp);
+    const { edited, note } = applyEditsWithNote(store, projectId, resp);
     if (edited.length === 0) {
       noChangeStreak += 1;
-      pushStep(p, "repair", "Model proposed no file changes this turn.");
+      pushStep(p, "repair", "Model proposed no file changes this turn.", { kind: "repair" });
       if (noChangeStreak >= 2) {
-        pushStep(p, "repair", "No progress for 2 turns; stopping repair.");
+        pushStep(p, "repair", "No progress for 2 turns; stopping repair.", { kind: "repair" });
         return null;
       }
       continue;
     }
     noChangeStreak = 0;
+    pushStep(p, "repair", note || `Rewrote ${edited.join(", ")}`, { kind: "write_file", path: edited[0], content: note });
     const r = await rerender();
+    pushStep(p, "repair", `Re-render exited ${r.exitCode}`, { kind: "command_output", exitCode: r.exitCode, output: r.stdout + "\n" + r.stderr });
     if (r.exitCode === 0) {
-      pushStep(p, "repair", `Fixed after ${turn} turn(s).`);
+      pushStep(p, "repair", `Fixed after ${turn} turn(s).`, { kind: "info" });
       return r;
     }
     lastErr = r.stderr + "\n" + r.stdout;
@@ -371,6 +395,31 @@ function applyEdits(store: ProjectStore, projectId: string, resp: string): strin
     }
   }
   return edited;
+}
+
+// Like applyEdits, but also surfaces the model's "note" so the transcript can
+// show what the repair turn changed (coding-agent style).
+function applyEditsWithNote(store: ProjectStore, projectId: string, resp: string): { edited: string[]; note: string } {
+  const json = extractJson(resp);
+  if (!json) return { edited: [], note: "" };
+  let parsed: { files?: Array<{ path: string; content: string }>; note?: string };
+  try {
+    parsed = JSON.parse(json);
+  } catch {
+    return { edited: [], note: "" };
+  }
+  const edited: string[] = [];
+  for (const f of parsed.files ?? []) {
+    if (f.path && typeof f.content === "string" && f.path.startsWith("src/")) {
+      try {
+        store.writeFile(projectId, f.path, f.content);
+        edited.push(f.path);
+      } catch {
+        /* jail rejects bad paths */
+      }
+    }
+  }
+  return { edited, note: typeof parsed.note === "string" ? parsed.note : "" };
 }
 
 function noteOf(resp: string): string {

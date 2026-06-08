@@ -21,6 +21,15 @@ export interface ProjectStep {
   timestamp: number;
   phase: string;
   detail: string;
+  // Optional rich fields for the coding-agent transcript.
+  kind?: "plan" | "write_file" | "command" | "command_output" | "repair" | "info" | "error";
+  path?: string;
+  content?: string;
+  command?: string;
+  // TS backend serializes camelCase (exitCode); Go uses snake_case (exit_code).
+  exit_code?: number;
+  exitCode?: number;
+  output?: string;
 }
 export interface Project {
   id: string;

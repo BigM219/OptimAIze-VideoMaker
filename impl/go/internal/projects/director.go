@@ -102,11 +102,12 @@ func (s *Store) Generate(pid, concept, audience string, durationS int) {
 	for i, sc := range sb.Scenes {
 		ids[i] = sc.ID
 	}
-	s.logStep(p, "storyboard", fmt.Sprintf("%d scenes: %s", len(sb.Scenes), strings.Join(ids, ", ")))
+	s.stepRich(p, Step{Phase: "storyboard", Kind: "plan",
+		Detail:  fmt.Sprintf("%s — %d scenes: %s", sb.Title, len(sb.Scenes), strings.Join(ids, ", ")),
+		Content: storyboardSummary(&sb)})
 
 	// 2. Author each scene.
 	for _, sc := range sb.Scenes {
-		s.logStep(p, "scene", "Writing src/scenes/"+sc.ID+".tsx")
 		rules := skills.RulesFor(sc.Title+" "+sc.Visual+" "+sc.Narration, 6000)
 		resp, err := client.Chat([]agent.ChatMessage{
 			{Role: "system", Content: sceneSystem(rules)},
@@ -117,21 +118,29 @@ func (s *Store) Generate(pid, concept, audience string, durationS int) {
 			p.fail("scene " + sc.ID + ": " + err.Error())
 			return
 		}
-		_ = s.WriteFile(pid, "src/scenes/"+sc.ID+".tsx", extractTSX(resp))
+		code := extractTSX(resp)
+		_ = s.WriteFile(pid, "src/scenes/"+sc.ID+".tsx", code)
+		s.stepRich(p, Step{Phase: "scene", Kind: "write_file", Detail: "Wrote src/scenes/" + sc.ID + ".tsx",
+			Path: "src/scenes/" + sc.ID + ".tsx", Content: code})
 	}
 
 	// 3. Assemble.
-	s.logStep(p, "assemble", "Writing src/Root.tsx and src/index.ts")
-	_ = s.WriteFile(pid, "src/Root.tsx", rootSource(&sb))
+	root := rootSource(&sb)
+	_ = s.WriteFile(pid, "src/Root.tsx", root)
 	_ = s.WriteFile(pid, "src/index.ts", indexSource)
+	s.stepRich(p, Step{Phase: "assemble", Kind: "write_file", Detail: "Wrote src/Root.tsx", Path: "src/Root.tsx", Content: root})
 
 	// 4. Render, then an agentic repair loop: keep feeding the build error back
 	//    to the model (with full project + running history) and keep fixing until
 	//    it renders or we hit a hard ceiling — the way a coding agent iterates on
 	//    its own errors instead of giving up after a fixed number of passes.
 	p.setState("rendering")
-	s.logStep(p, "render", "Rendering the assembled video")
-	r, _ := s.mgr.Backend().Exec(p.SandboxID, "npx --no-install remotion render Video out/video.mp4", "", nil, 1200)
+	renderCmd := "npx --no-install remotion render Video out/video.mp4"
+	s.stepRich(p, Step{Phase: "render", Kind: "command", Detail: "Rendering the assembled video", Command: renderCmd})
+	r, _ := s.mgr.Backend().Exec(p.SandboxID, renderCmd, "", nil, 1200)
+	ec := r.ExitCode
+	s.stepRich(p, Step{Phase: "render", Kind: "command_output", Detail: fmt.Sprintf("render exited %d", ec),
+		ExitCode: &ec, Output: r.Stdout + "\n" + r.Stderr})
 	if r.ExitCode != 0 {
 		r = s.repairLoop(pid, client, r)
 	}
@@ -141,7 +150,7 @@ func (s *Store) Generate(pid, concept, audience string, durationS int) {
 	}
 	p.ExportPath = "out/video.mp4"
 	p.setState("ready")
-	s.logStep(p, "done", "Concept video rendered to out/video.mp4")
+	s.stepRich(p, Step{Phase: "done", Kind: "info", Detail: "Concept video rendered to out/video.mp4"})
 }
 
 func (p *Project) fail(msg string) {
@@ -219,7 +228,7 @@ func (s *Store) repairLoop(pid string, client *agent.LLMClient, firstFail types.
 			continue
 		}
 		messages = append(messages, agent.ChatMessage{Role: "assistant", Content: resp})
-		edited := s.applyEdits(pid, resp)
+		edited, note := s.applyEditsWithNote(pid, resp)
 		if len(edited) == 0 {
 			noChange++
 			s.logStep(p, "repair", "Model proposed no file changes this turn.")
@@ -230,9 +239,16 @@ func (s *Store) repairLoop(pid string, client *agent.LLMClient, firstFail types.
 			continue
 		}
 		noChange = 0
+		detail := note
+		if detail == "" {
+			detail = "Rewrote " + strings.Join(edited, ", ")
+		}
+		s.stepRich(p, Step{Phase: "repair", Detail: detail, Kind: "write_file", Path: edited[0], Content: note})
 		r, _ = s.mgr.Backend().Exec(p.SandboxID, "npx --no-install remotion render Video out/video.mp4", "", nil, 1200)
+		ec := r.ExitCode
+		s.stepRich(p, Step{Phase: "repair", Detail: fmt.Sprintf("Re-render exited %d", ec), Kind: "command_output", ExitCode: &ec, Output: r.Stdout + "\n" + r.Stderr})
 		if r.ExitCode == 0 {
-			s.logStep(p, "repair", fmt.Sprintf("Fixed after %d turn(s).", turn))
+			s.stepRich(p, Step{Phase: "repair", Detail: fmt.Sprintf("Fixed after %d turn(s).", turn), Kind: "info"})
 			return r
 		}
 		lastErr = r.Stderr + "\n" + r.Stdout
@@ -303,4 +319,20 @@ func noteOf(resp string) string {
 		return o.Note
 	}
 	return "Applied edits."
+}
+
+// applyEditsWithNote applies the model's file edits and returns the edited paths
+// plus the model's "note" (what it changed), for the transcript.
+func (s *Store) applyEditsWithNote(pid, resp string) ([]string, string) {
+	return s.applyEdits(pid, resp), noteOf(resp)
+}
+
+// storyboardSummary renders a scene list for the transcript plan card.
+func storyboardSummary(sb *Storyboard) string {
+	var b strings.Builder
+	b.WriteString(sb.Title + "\n")
+	for i, sc := range sb.Scenes {
+		b.WriteString(fmt.Sprintf("%d. %s (%d frames) — %s\n", i+1, sc.ID, sc.DurationInFrames, sc.Title))
+	}
+	return b.String()
 }

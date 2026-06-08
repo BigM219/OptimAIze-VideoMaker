@@ -35,6 +35,23 @@ type Step struct {
 	Timestamp float64 `json:"timestamp"`
 	Phase     string  `json:"phase"`
 	Detail    string  `json:"detail"`
+	// Optional rich fields so the UI can render a coding-agent transcript.
+	Kind     string `json:"kind,omitempty"`     // plan|write_file|command|command_output|repair|info|error
+	Path     string `json:"path,omitempty"`     // write_file
+	Content  string `json:"content,omitempty"`  // write_file: code written (capped)
+	Command  string `json:"command,omitempty"`  // command
+	ExitCode *int   `json:"exit_code,omitempty"` // command_output
+	Output   string `json:"output,omitempty"`   // command_output (capped)
+}
+
+// stepFieldCap bounds large transcript payloads so the polled JSON stays small.
+const stepFieldCap = 4000
+
+func capField(s string) string {
+	if len(s) <= stepFieldCap {
+		return s
+	}
+	return s[:stepFieldCap] + fmt.Sprintf("\n… (%d more chars)", len(s)-stepFieldCap)
 }
 type Project struct {
 	ID         string            `json:"id"`
@@ -73,8 +90,17 @@ func id(p string) string {
 }
 
 func (s *Store) step(p *Project, phase, detail string) {
+	s.stepRich(p, Step{Phase: phase, Detail: detail})
+}
+
+// stepRich appends a step with optional rich transcript fields (capped).
+func (s *Store) stepRich(p *Project, st Step) {
 	p.mu.Lock()
-	p.Steps = append(p.Steps, Step{Index: len(p.Steps), Timestamp: now(), Phase: phase, Detail: detail})
+	st.Index = len(p.Steps)
+	st.Timestamp = now()
+	st.Content = capField(st.Content)
+	st.Output = capField(st.Output)
+	p.Steps = append(p.Steps, st)
 	p.UpdatedAt = now()
 	p.mu.Unlock()
 }
@@ -117,22 +143,28 @@ func (s *Store) scaffold(p *Project) {
 		return
 	}
 	p.SandboxID = info.SandboxID
-	s.step(p, "scaffold", "npx create-video --blank")
-	r, _ := s.mgr.Backend().Exec(p.SandboxID, "npx --yes create-video@latest --yes --blank .", "", nil, 600)
+	cmd1 := "npx --yes create-video@latest --yes --blank ."
+	s.stepRich(p, Step{Phase: "scaffold", Detail: "Scaffolding a blank Remotion project", Kind: "command", Command: cmd1})
+	r, _ := s.mgr.Backend().Exec(p.SandboxID, cmd1, "", nil, 600)
+	ec1 := r.ExitCode
+	s.stepRich(p, Step{Phase: "scaffold", Detail: fmt.Sprintf("create-video exited %d", ec1), Kind: "command_output", ExitCode: &ec1, Output: r.Stdout + "\n" + r.Stderr})
 	if r.ExitCode != 0 {
 		p.State = "failed"
 		p.Error = "scaffold failed: " + trim(r.Stderr, 300)
 		return
 	}
-	s.step(p, "install", "npm install")
-	r, _ = s.mgr.Backend().Exec(p.SandboxID, "npm install --no-audit --no-fund", "", nil, 1200)
+	cmd2 := "npm install --no-audit --no-fund"
+	s.stepRich(p, Step{Phase: "install", Detail: "Installing dependencies", Kind: "command", Command: cmd2})
+	r, _ = s.mgr.Backend().Exec(p.SandboxID, cmd2, "", nil, 1200)
+	ec2 := r.ExitCode
+	s.stepRich(p, Step{Phase: "install", Detail: fmt.Sprintf("npm install exited %d", ec2), Kind: "command_output", ExitCode: &ec2, Output: r.Stdout + "\n" + r.Stderr})
 	if r.ExitCode != 0 {
 		p.State = "failed"
 		p.Error = "npm install failed: " + trim(r.Stderr, 300)
 		return
 	}
 	p.State = "ready"
-	s.step(p, "ready", "Project scaffolded and dependencies installed.")
+	s.stepRich(p, Step{Phase: "ready", Detail: "Project scaffolded and dependencies installed.", Kind: "info"})
 }
 
 func (s *Store) LaunchStudio(pid string) (string, int, error) {
