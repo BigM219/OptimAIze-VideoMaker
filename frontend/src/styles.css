@@ -71,3 +71,17 @@ button.secondary { background: transparent; border: 1px solid var(--border); col
 .rule-chip:hover { border-color: var(--accent); color: var(--accent); }
 .rule-view { margin-top: 14px; border-top: 1px solid var(--border); padding-top: 10px; }
 .rule-view pre { background: var(--bg); border: 1px solid var(--border); border-radius: 6px; padding: 10px; font-family: var(--mono); font-size: 12px; max-height: 320px; overflow: auto; white-space: pre-wrap; }
+
+/* Model manager */
+.model-list { display: flex; flex-direction: column; gap: 4px; margin: 8px 0; }
+.model-row { display: flex; align-items: center; gap: 8px; padding: 5px 8px; border: 1px solid var(--border); border-radius: 6px; }
+.model-row.off { opacity: .45; }
+.model-ord { width: 18px; text-align: right; color: var(--muted); font-size: 12px; }
+.model-name { flex: 1; font-size: 12px; }
+.prov { font-size: 10px; padding: 2px 7px; border-radius: 10px; border: 1px solid var(--border); color: var(--muted); }
+.prov-zai { color: #d29922; border-color: #d29922; }
+.prov-custom { color: #3fb950; border-color: #3fb950; }
+.model-actions { display: flex; gap: 4px; }
+.model-actions button { padding: 2px 8px; }
+.model-add { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 8px; }
+.model-add input { flex: 1; min-width: 160px; }

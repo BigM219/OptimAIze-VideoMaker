@@ -10,6 +10,7 @@ import (
 
 	"optimaize-videomaker-go/internal/agent"
 	"optimaize-videomaker-go/internal/skills"
+	"optimaize-videomaker-go/internal/types"
 )
 
 const storyboardSystem = `You are a video director for educational explainer videos built with Remotion.
@@ -22,9 +23,9 @@ Rules: 4-6 scenes; ids PascalCase ending "Scene"; durations sum to roughly the r
 
 func sceneSystem(rules string) string {
 	core := skills.Core()
-	s := "You write a single Remotion scene component in TypeScript. Reply with ONLY a fenced ```tsx block containing one file.\n" +
-		"Requirements:\n- Export a named React FC matching the scene id.\n- Use only \"react\" and \"remotion\" imports (AbsoluteFill, useCurrentFrame, useVideoConfig, interpolate, spring, Sequence).\n- Self-contained, no external assets, no audio. Fill the frame; large readable text.\n\n" +
-		"You MUST follow these best practices:\n" + core
+	// Output contract only — the skill carries all the how-to.
+	s := "You write a single Remotion scene component in TypeScript. Reply with ONLY a fenced ```tsx block containing one complete file that exports a named React FC matching the scene id.\n\n" +
+		"Follow these best practices:\n" + core
 	if rules != "" {
 		s += "\n\nRelevant rules for this scene:" + rules
 	}
@@ -111,7 +112,7 @@ func (s *Store) Generate(pid, concept, audience string, durationS int) {
 			{Role: "system", Content: sceneSystem(rules)},
 			{Role: "user", Content: fmt.Sprintf("Storyboard: %s\nConcept: %s\n\nWrite scene %q.\nTitle: %s\nDuration: %d frames at %dfps.\nNarration: %s\nVisual: %s\nOne of %d scenes (%s); keep style consistent.",
 				sb.Title, concept, sc.ID, sc.Title, sc.DurationInFrames, sb.FPS, sc.Narration, sc.Visual, len(sb.Scenes), strings.Join(ids, ", "))},
-		}, 2200, 0.3)
+		}, 4000, 0.3)
 		if err != nil {
 			p.fail("scene " + sc.ID + ": " + err.Error())
 			return
@@ -124,17 +125,15 @@ func (s *Store) Generate(pid, concept, audience string, durationS int) {
 	_ = s.WriteFile(pid, "src/Root.tsx", rootSource(&sb))
 	_ = s.WriteFile(pid, "src/index.ts", indexSource)
 
-	// 4. Render with up to 3 repair passes.
+	// 4. Render, then an agentic repair loop: keep feeding the build error back
+	//    to the model (with full project + running history) and keep fixing until
+	//    it renders or we hit a hard ceiling — the way a coding agent iterates on
+	//    its own errors instead of giving up after a fixed number of passes.
 	p.setState("rendering")
 	s.logStep(p, "render", "Rendering the assembled video")
 	r, _ := s.mgr.Backend().Exec(p.SandboxID, "npx --no-install remotion render Video out/video.mp4", "", nil, 1200)
-	for attempt := 1; attempt <= 3 && r.ExitCode != 0; attempt++ {
-		s.logStep(p, "repair", fmt.Sprintf("Render failed (attempt %d/3); asking the model to fix the file(s)", attempt))
-		edited := s.repairOnce(pid, client, r.Stderr+"\n"+r.Stdout)
-		if len(edited) == 0 {
-			break
-		}
-		r, _ = s.mgr.Backend().Exec(p.SandboxID, "npx --no-install remotion render Video out/video.mp4", "", nil, 1200)
+	if r.ExitCode != 0 {
+		r = s.repairLoop(pid, client, r)
 	}
 	if r.ExitCode != 0 {
 		p.fail("render failed after repair: " + trim(r.Stderr, 400))
@@ -184,16 +183,71 @@ func fileBlock(files map[string]string) string {
 	return b.String()
 }
 
-func (s *Store) repairOnce(pid string, client *agent.LLMClient, errText string) []string {
-	fb := fileBlock(s.collect(pid))
-	resp, err := client.Chat([]agent.ChatMessage{
-		{Role: "system", Content: "You fix Remotion build/render errors. Reply with ONLY a fenced ```json block: {\"files\":[{\"path\":\"src/...\",\"content\":\"full file\"}],\"note\":\"...\"}. Provide complete file contents."},
-		{Role: "user", Content: "Render error:\n" + trim(errText, 1500) + "\n\nProject files:\n" + trim(fb, 12000)},
-	}, 2600, 0.2)
-	if err != nil {
-		return nil
+// repairLoop is an agentic, stateful repair: the model sees the latest build
+// error and the full source each turn, rewrites whole files, we re-render and
+// feed the new error back — repeating until the render passes, the model stops
+// proposing changes for two consecutive turns, or a hard ceiling is reached.
+// Returns the final ExecResult (ExitCode 0 on success).
+const maxRepairTurns = 8
+
+func (s *Store) repairLoop(pid string, client *agent.LLMClient, firstFail types.ExecResult) types.ExecResult {
+	p, _ := s.Get(pid)
+	messages := []agent.ChatMessage{
+		{Role: "system", Content: "You are a Remotion build-fixer working iteratively, like a coding agent. " +
+			"Each turn you receive the latest build/render error and the full project source. " +
+			"Diagnose the actual cause (often a truncated/unclosed file, a bad import, or a type error), " +
+			"then reply with ONLY a fenced ```json block: {\"files\":[{\"path\":\"src/...\",\"content\":\"COMPLETE file content\"}],\"note\":\"what you changed\"}. " +
+			"Always return whole files, never fragments. If a file looks truncated, rewrite it complete."},
 	}
-	return s.applyEdits(pid, resp)
+	lastErr := firstFail.Stderr + "\n" + firstFail.Stdout
+	noChange := 0
+	r := firstFail
+	for turn := 1; turn <= maxRepairTurns; turn++ {
+		s.logStep(p, "repair", fmt.Sprintf("Fixing render error (turn %d/%d)", turn, maxRepairTurns))
+		fb := fileBlock(s.collect(pid))
+		messages = append(messages, agent.ChatMessage{
+			Role:    "user",
+			Content: "Build error:\n" + trim(lastErr, 2000) + "\n\nProject files:\n" + trim(fb, 16000),
+		})
+		resp, err := client.Chat(trimRepair(messages), 3000, 0.2)
+		if err != nil {
+			s.logStep(p, "repair", "LLM unavailable this turn: "+trim(err.Error(), 120))
+			noChange++
+			if noChange >= 2 {
+				return r
+			}
+			continue
+		}
+		messages = append(messages, agent.ChatMessage{Role: "assistant", Content: resp})
+		edited := s.applyEdits(pid, resp)
+		if len(edited) == 0 {
+			noChange++
+			s.logStep(p, "repair", "Model proposed no file changes this turn.")
+			if noChange >= 2 {
+				s.logStep(p, "repair", "No progress for 2 turns; stopping repair.")
+				return r
+			}
+			continue
+		}
+		noChange = 0
+		r, _ = s.mgr.Backend().Exec(p.SandboxID, "npx --no-install remotion render Video out/video.mp4", "", nil, 1200)
+		if r.ExitCode == 0 {
+			s.logStep(p, "repair", fmt.Sprintf("Fixed after %d turn(s).", turn))
+			return r
+		}
+		lastErr = r.Stderr + "\n" + r.Stdout
+	}
+	return r
+}
+
+// trimRepair keeps the repair conversation bounded: system + the last few turns
+// (each user turn already carries the full latest source, so old turns are stale).
+func trimRepair(messages []agent.ChatMessage) []agent.ChatMessage {
+	if len(messages) <= 5 {
+		return messages
+	}
+	out := []agent.ChatMessage{messages[0]}
+	return append(out, messages[len(messages)-4:]...)
 }
 
 // ChatEdit: full-context code-aware edit. Returns the note + edited paths.

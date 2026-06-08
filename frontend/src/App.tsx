@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import Editor from "@monaco-editor/react";
-import { api, type Project, type FileEntry, type SkillInfo } from "./lib/api";
+import { api, type Project, type FileEntry, type SkillInfo, type ModelEntry } from "./lib/api";
 
 // Recursively flatten the project's src tree into a sorted file list.
 async function loadFiles(projectId: string): Promise<string[]> {
@@ -292,6 +292,107 @@ function ConceptBar({ onGenerate, busy }: { onGenerate: (c: string) => void; bus
 
 // Settings: shows the active video-skill given to the LLM (name, description,
 // the always-on core size, and the on-demand rules). Lets the user verify what
+// Model manager: add models from any provider (OpenRouter, z.ai, or a custom
+// OpenAI-compatible base URL), enable/disable, and set the fallback priority
+// order by moving entries up/down. Persisted server-side to models.json.
+function ModelManager() {
+  const [models, setModels] = useState<ModelEntry[] | null>(null);
+  const [saving, setSaving] = useState(false);
+  const [savedAt, setSavedAt] = useState(0);
+  // new-entry form
+  const [model, setModel] = useState("");
+  const [provider, setProvider] = useState("openrouter");
+  const [baseUrl, setBaseUrl] = useState("");
+  const [keyEnv, setKeyEnv] = useState("");
+
+  useEffect(() => {
+    void api.models().then((r) => setModels(r.models)).catch(() => setModels([]));
+  }, []);
+
+  const persist = useCallback(async (next: ModelEntry[]) => {
+    setModels(next);
+    setSaving(true);
+    try {
+      await api.saveModels(next);
+      setSavedAt(Date.now());
+    } finally {
+      setSaving(false);
+    }
+  }, []);
+
+  if (!models) return <p className="muted">Loading models…</p>;
+
+  const move = (i: number, d: number) => {
+    const j = i + d;
+    if (j < 0 || j >= models.length) return;
+    const next = models.slice();
+    [next[i], next[j]] = [next[j], next[i]];
+    void persist(next);
+  };
+  const toggle = (i: number) => {
+    const next = models.slice();
+    next[i] = { ...next[i], enabled: !next[i].enabled };
+    void persist(next);
+  };
+  const remove = (i: number) => void persist(models.filter((_, k) => k !== i));
+  const add = () => {
+    if (!model.trim()) return;
+    const e: ModelEntry = { model: model.trim(), provider, enabled: true };
+    if (provider === "custom") {
+      e.baseUrl = baseUrl.trim();
+      e.keyEnv = keyEnv.trim();
+    }
+    void persist([...models, e]);
+    setModel("");
+    setBaseUrl("");
+    setKeyEnv("");
+  };
+
+  return (
+    <div>
+      <div className="modal-head">
+        <h3 style={{ margin: 0 }}>Model fallback chain</h3>
+        <span className="muted small">{saving ? "saving…" : savedAt ? "saved ✓" : ""}</span>
+      </div>
+      <p className="muted small">
+        Tried top-to-bottom; the first that responds wins. Put fast, reliable models first.
+        Disabled models are skipped. Mix providers freely.
+      </p>
+      <div className="model-list">
+        {models.map((m, i) => (
+          <div className={`model-row${m.enabled ? "" : " off"}`} key={`${m.provider}:${m.model}:${i}`}>
+            <span className="model-ord">{i + 1}</span>
+            <input type="checkbox" checked={m.enabled} onChange={() => toggle(i)} title="enabled" />
+            <span className="model-name mono">{m.model}</span>
+            <span className={`prov prov-${m.provider}`}>{m.provider}</span>
+            {m.provider === "custom" && <span className="muted small mono">{m.baseUrl}</span>}
+            <span className="model-actions">
+              <button className="small secondary" disabled={i === 0} onClick={() => move(i, -1)}>↑</button>
+              <button className="small secondary" disabled={i === models.length - 1} onClick={() => move(i, 1)}>↓</button>
+              <button className="small danger" onClick={() => remove(i)}>✕</button>
+            </span>
+          </div>
+        ))}
+      </div>
+      <div className="model-add">
+        <input placeholder="model id (e.g. google/gemma-4-31b-it:free)" value={model} onChange={(e) => setModel(e.target.value)} />
+        <select value={provider} onChange={(e) => setProvider(e.target.value)}>
+          <option value="openrouter">OpenRouter</option>
+          <option value="zai">z.ai</option>
+          <option value="custom">Custom</option>
+        </select>
+        {provider === "custom" && (
+          <>
+            <input placeholder="base URL (OpenAI-compatible)" value={baseUrl} onChange={(e) => setBaseUrl(e.target.value)} />
+            <input placeholder="API key env var (e.g. MY_KEY)" value={keyEnv} onChange={(e) => setKeyEnv(e.target.value)} />
+          </>
+        )}
+        <button onClick={add}>Add model</button>
+      </div>
+    </div>
+  );
+}
+
 // domain knowledge the model is steered with, and read any rule.
 function SettingsPanel({ onClose }: { onClose: () => void }) {
   const [skill, setSkill] = useState<SkillInfo | null>(null);
@@ -305,9 +406,12 @@ function SettingsPanel({ onClose }: { onClose: () => void }) {
     <div className="modal-backdrop" onClick={onClose}>
       <div className="modal" onClick={(e) => e.stopPropagation()}>
         <div className="modal-head">
-          <h2>Settings · LLM Skills</h2>
+          <h2>Settings</h2>
           <button className="small secondary" onClick={onClose}>Close</button>
         </div>
+
+        <ModelManager />
+        <h3 style={{ marginTop: 18 }}>LLM Skill</h3>
         {!skill ? (
           <p className="muted">Loading…</p>
         ) : !skill.available ? (
