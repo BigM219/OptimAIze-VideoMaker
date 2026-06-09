@@ -91,3 +91,16 @@ func assertProjectPath(p string) (string, error) {
 	}
 	return "", validationErr("Path %q must be under one of: %s.", p, strings.Join(writablePrefixes, ", "))
 }
+
+// assertReadablePath is the looser check for read-only tools (read): any path
+// relative to the project root is allowed (e.g. package.json, tsconfig.json) so
+// the agent can understand the project, but absolute paths and ".." escapes are
+// still rejected. Write/edit keep the stricter assertProjectPath.
+func assertReadablePath(p string) (string, error) {
+	norm := strings.ReplaceAll(p, "\\", "/")
+	norm = strings.TrimPrefix(norm, "./")
+	if strings.HasPrefix(norm, "/") || strings.Contains(norm, "..") {
+		return "", validationErr("Path %q must be relative to the project root with no \"..\".", p)
+	}
+	return norm, nil
+}

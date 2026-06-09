@@ -13,7 +13,7 @@ var BashTool = Def{
 		"use bash for builds, installs, and running commands. Default timeout 120s.",
 	Parameters: []Param{
 		{Name: "command", Type: "string", Description: "The command to execute", Required: true},
-		{Name: "description", Type: "string", Description: "Clear, concise description of what this command does (5-10 words)", Required: true},
+		{Name: "description", Type: "string", Description: "Optional short description of what this command does (for the transcript)"},
 		{Name: "timeout", Type: "number", Description: "Optional timeout in milliseconds (default 120000)"},
 	},
 	Validate: func(args map[string]any) (map[string]any, error) {
@@ -21,9 +21,15 @@ var BashTool = Def{
 		if err != nil {
 			return nil, err
 		}
-		description, err := reqString(args, "description")
-		if err != nil {
-			return nil, err
+		// description is for the transcript only — don't block the tool if a
+		// model omits it; fall back to a truncated form of the command itself.
+		description, _ := optString(args, "description")
+		if description == "" {
+			if len(command) > 60 {
+				description = command[:60]
+			} else {
+				description = command
+			}
 		}
 		timeout, _, err := optNumber(args, "timeout")
 		if err != nil {

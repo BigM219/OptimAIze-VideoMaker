@@ -3,7 +3,7 @@
 // (already jailed). Line numbers let `edit` reference exact spans.
 
 import type { ToolDef, ToolContext, ToolResult } from "./types.js";
-import { optNumber, reqString, assertProjectPath } from "./validate.js";
+import { optNumber, reqString, assertReadablePath } from "./validate.js";
 import { truncateOutput, MAX_LINE_LENGTH } from "./truncate.js";
 
 const DEFAULT_LIMIT = 2000;
@@ -24,7 +24,7 @@ export const ReadTool: ToolDef<Args> = {
     limit: { type: "number", description: `Max lines to read (default ${DEFAULT_LIMIT})` },
   },
   validate(args) {
-    const filePath = assertProjectPath(reqString(args, "filePath"));
+    const filePath = assertReadablePath(reqString(args, "filePath"));
     return { filePath, offset: optNumber(args, "offset"), limit: optNumber(args, "limit") };
   },
   async execute(args, ctx: ToolContext): Promise<ToolResult> {

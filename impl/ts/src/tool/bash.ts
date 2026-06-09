@@ -4,7 +4,7 @@
 // tree-sitter parse or per-command permission prompt. Output is tail-limited.
 
 import type { ToolDef, ToolContext, ToolResult } from "./types.js";
-import { reqString, optNumber } from "./validate.js";
+import { reqString, optNumber, optString } from "./validate.js";
 import { truncateOutput } from "./truncate.js";
 
 const DEFAULT_TIMEOUT_MS = 120_000; // 2 minutes, matching opencode's bash default
@@ -21,12 +21,14 @@ export const BashTool: ToolDef<Args> = {
     "Run a terminal command inside the project sandbox (git, npm, npx, remotion, ls, etc.). The sandbox is resource-capped and jailed to the project workdir. Prefer the read/write/edit/grep/glob tools for file work; use bash for builds, installs, and running commands. Default timeout 120s.",
   parameters: {
     command: { type: "string", description: "The command to execute", required: true },
-    description: { type: "string", description: "Clear, concise description of what this command does (5-10 words)", required: true },
+    description: { type: "string", description: "Optional short description of what this command does (for the transcript)" },
     timeout: { type: "number", description: "Optional timeout in milliseconds (default 120000)" },
   },
   validate(args) {
     const command = reqString(args, "command");
-    const description = reqString(args, "description");
+    // description is for the transcript only — don't block the tool if a model
+    // omits it; fall back to a truncated form of the command itself.
+    const description = optString(args, "description") || command.slice(0, 60);
     return { command, description, timeout: optNumber(args, "timeout") };
   },
   async execute(args, ctx: ToolContext): Promise<ToolResult> {
