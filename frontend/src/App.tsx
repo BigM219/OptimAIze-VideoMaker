@@ -35,7 +35,6 @@ export function App() {
   const [chat, setChat] = useState<Array<{ role: string; content: string }>>([]);
   const [chatInput, setChatInput] = useState("");
   const [busy, setBusy] = useState(false);
-  const [studioUrl, setStudioUrl] = useState<string | null>(null);
   const [showSettings, setShowSettings] = useState(false);
   const pollRef = useRef<number | null>(null);
 
@@ -70,9 +69,8 @@ export function App() {
         const p = await api.getProject(project.id);
         setProject(p);
         setChat(p.chat);
-        // The director launches Studio itself; pick up its URL so the slide
-        // deck can deep-link to each composition without a manual click.
-        if (p.studio_url) setStudioUrl((u) => u ?? p.studio_url);
+        // Our self-written studio rebuilds itself after each scene; the slide
+        // deck reads studio_version off the polled project to bust the iframe.
         if (p.state === "ready" || p.state === "failed") {
           setFiles(await loadFiles(p.id));
         }
@@ -108,12 +106,6 @@ export function App() {
     await api.writeFile(project.id, activeFile, code);
     setDirty(false);
   }, [project, activeFile, code]);
-
-  const launchStudio = useCallback(async () => {
-    if (!project) return;
-    const r = await api.launchStudio(project.id);
-    setStudioUrl(r.url);
-  }, [project]);
 
   const generate = useCallback(
     async (concept: string) => {
@@ -170,7 +162,6 @@ export function App() {
         <span className="muted small mono">{project.id}</span>
         <div className="spacer" />
         <ConceptBar onGenerate={generate} busy={busy || working} />
-        <button className="secondary-action" onClick={launchStudio} disabled={project.state !== "ready"}>Live preview</button>
         <button className="secondary-action" onClick={exportVideo} disabled={busy || project.state !== "ready"}>Export mp4</button>
         <button className="ghost-action" onClick={() => setShowSettings(true)}>Settings</button>
       </header>
@@ -188,10 +179,9 @@ export function App() {
           <div className="vm-pane-head"><span className="eyebrow">Slides</span></div>
           <div className="vm-preview-body">
             <SlideStudio
+              project={project}
               storyboard={project.storyboard}
-              studioUrl={studioUrl}
-              onLaunchStudio={launchStudio}
-              launching={busy}
+              onProjectUpdate={setProject}
             />
           </div>
         </section>

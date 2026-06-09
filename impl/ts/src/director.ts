@@ -8,6 +8,8 @@ import { capStep, type ProjectStore, type Storyboard, type Scene, type ProjectSt
 import type { ExecResult } from "./types.js";
 import { rootSource, indexSource } from "./remotion-source.js";
 import { runAgent } from "./tool/agent-loop.js";
+import { buildStudio } from "./studio.js";
+import { probeScene, type ProbeResult } from "./probe.js";
 
 function extractJson(text: string): string | null {
   const parts = text.split("```");
@@ -122,18 +124,12 @@ export async function generateConcept(
       content: sb.scenes.map((s, i) => `${i + 1}. ${s.id} (${s.durationInFrames}f) — ${s.title}\n   ${s.narration}`).join("\n"),
     });
 
-    // Studio renders every slide live from code, so launch it up front and
-    // start with an empty Root. As each scene is written we rewrite Root to
-    // register the scenes-so-far; Studio hot-reloads and the new slide appears.
+    // Our self-written studio bundles a @remotion/player site from the scenes
+    // written so far. Start with an empty Root; after each scene probes clean we
+    // rebuild the player bundle so the new slide appears (hot-reload via ?v=).
     const backend = store.manager().backendFor(p.sandboxId);
     store.writeFile(projectId, "src/index.ts", indexSource());
     store.writeFile(projectId, "src/Root.tsx", rootSource(sb, []));
-    try {
-      const s = store.launchStudio(projectId);
-      stepLog("studio", `Live Studio on ${s.url} — slides appear as they're written.`, { kind: "info" });
-    } catch (e) {
-      stepLog("studio", `Studio launch deferred: ${String((e as Error).message ?? e)}`, { kind: "info" });
-    }
 
     // 2. Author each scene component. After writing each one, register the
     //    scenes-written-so-far in Root so Studio hot-reloads and that slide
@@ -163,7 +159,30 @@ export async function generateConcept(
       // Register this slide in Studio (hot-reload shows it immediately).
       written.push(scene);
       store.writeFile(projectId, "src/Root.tsx", rootSource(sb, written));
-      scene.status = "ready";
+
+      // Per-frame probe: render a handful of sampled frames as stills to catch
+      // frame-dependent errors (e.g. interpolate() on a color) that only surface
+      // past frame 0. On failure, run a scene-scoped repair right away — feed the
+      // exact failing frame + stderr back to the model — instead of waiting for
+      // the final full-video render to discover it.
+      const probe = await probeScene(store, projectId, scene, (phase, detail, extra) => stepLog(phase, detail, extra));
+      if (probe.ok) {
+        scene.status = "ready";
+      } else {
+        scene.status = "error";
+        scene.renderError = `frame ${probe.failedFrame}: ${probe.error ?? "render failed"}`;
+        const fixed = await repairScene(store, projectId, client, scene, probe);
+        scene.status = fixed ? "ready" : "error";
+        if (fixed) scene.renderError = undefined;
+      }
+      // Rebuild the self-written player bundle so this slide shows up live.
+      if (scene.status === "ready") {
+        try {
+          await buildStudio(store, projectId, (phase, detail, extra) => stepLog(phase, detail, extra));
+        } catch (e) {
+          stepLog("studio", `Studio rebuild deferred: ${String((e as Error).message ?? e)}`, { kind: "info" });
+        }
+      }
       p.updatedAt = Date.now() / 1000;
     }
 
@@ -264,6 +283,44 @@ async function repairLoop(
     lastErr = r.stderr + "\n" + r.stdout;
   }
   return null;
+}
+
+// Scene-scoped repair: when a per-frame probe fails, fix that scene right away by
+// feeding the failing frame + stderr to the model and re-probing — reusing the
+// generic repairLoop with a probe-shaped rerender closure. Returns true once the
+// scene probes clean, false if it never recovers within the ceiling.
+async function repairScene(
+  store: ProjectStore,
+  projectId: string,
+  client: OpenRouterClient,
+  scene: Scene,
+  firstProbe: ProbeResult,
+): Promise<boolean> {
+  // Adapt probeScene to the ExecResult shape repairLoop's rerender expects:
+  // exitCode 0 when the scene probes clean, 1 with the failing frame + stderr.
+  const p = store.get(projectId);
+  const probeAsExec = async (): Promise<ExecResult> => {
+    const r = await probeScene(store, projectId, scene, (phase, detail, extra) => pushStep(p, phase, detail, extra));
+    if (r.ok) return { exitCode: 0, stdout: "", stderr: "", durationS: 0, timedOut: false, killedByCap: false };
+    return {
+      exitCode: 1,
+      stdout: "",
+      stderr: `frame ${r.failedFrame}: ${r.error ?? "render failed"}`,
+      durationS: 0,
+      timedOut: false,
+      killedByCap: false,
+    };
+  };
+  const seed: ExecResult = {
+    exitCode: 1,
+    stdout: "",
+    stderr: `frame ${firstProbe.failedFrame}: ${firstProbe.error ?? "render failed"}`,
+    durationS: 0,
+    timedOut: false,
+    killedByCap: false,
+  };
+  const ok = await repairLoop(store, projectId, client, null, probeAsExec, seed);
+  return ok !== null;
 }
 
 // Keep the repair conversation bounded: system + the last few turns (each turn's

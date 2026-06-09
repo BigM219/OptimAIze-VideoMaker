@@ -122,16 +122,11 @@ func (s *Store) Generate(pid, concept, audience string, durationS int) {
 		Detail:  fmt.Sprintf("%s — %d scenes: %s", sb.Title, len(sb.Scenes), strings.Join(ids, ", ")),
 		Content: storyboardSummary(&sb)})
 
-	// Studio renders every slide live from code, so launch it up front with an
-	// empty Root. As each scene is written we rewrite Root to register the
-	// scenes-so-far; Studio hot-reloads and the new slide appears.
+	// Our self-written studio bundles a @remotion/player site from the scenes
+	// written so far. Start with an empty Root; after each scene probes clean we
+	// rebuild the player bundle so the new slide appears (hot-reload via ?v=).
 	_ = s.WriteFile(pid, "src/index.ts", indexSource)
 	_ = s.WriteFile(pid, "src/Root.tsx", rootSourceFor(&sb, nil))
-	if url, _, err := s.LaunchStudio(pid); err == nil {
-		s.stepRich(p, Step{Phase: "studio", Kind: "info", Detail: "Live Studio on " + url + " — slides appear as they're written."})
-	} else {
-		s.stepRich(p, Step{Phase: "studio", Kind: "info", Detail: "Studio launch deferred: " + err.Error()})
-	}
 
 	// 2. Author each scene. After writing each one, register the
 	//    scenes-written-so-far in Root so Studio hot-reloads and that slide
@@ -156,7 +151,27 @@ func (s *Store) Generate(pid, concept, audience string, durationS int) {
 			Path: "src/scenes/" + sc.ID + ".tsx", Content: code})
 		// Register this slide in Studio (hot-reload shows it immediately).
 		_ = s.WriteFile(pid, "src/Root.tsx", rootSourceFor(&sb, sb.Scenes[:i+1]))
-		sc.Status = "ready"
+
+		// Per-frame probe: render sampled frames as stills to catch frame-dependent
+		// errors (e.g. interpolate() on a color) that only surface past frame 0. On
+		// failure, run a scene-scoped repair right away with the failing frame + stderr.
+		probe := s.probeScene(pid, *sc)
+		if probe.OK {
+			sc.Status = "ready"
+		} else {
+			sc.Status = "error"
+			sc.RenderError = frameErr(probe)
+			if s.repairScene(pid, client, sc, probe) {
+				sc.Status = "ready"
+				sc.RenderError = ""
+			} else {
+				sc.Status = "error"
+			}
+		}
+		// Rebuild the self-written player bundle so this slide shows up live.
+		if sc.Status == "ready" {
+			_, _ = s.BuildStudio(pid)
+		}
 		p.UpdatedAt = now()
 	}
 
@@ -235,6 +250,18 @@ func fileBlock(files map[string]string) string {
 const maxRepairTurns = 8
 
 func (s *Store) repairLoop(pid string, client *agent.LLMClient, firstFail types.ExecResult) types.ExecResult {
+	// Default rerender = the full-video render (the original whole-project repair).
+	return s.repairLoopWith(pid, client, firstFail, func() types.ExecResult {
+		r, _ := s.mgr.Backend().Exec(pid2sandbox(s, pid), "npx --no-install remotion render Video out/video.mp4", "", nil, 1200)
+		return r
+	})
+}
+
+// repairLoopWith is the shared agentic repair loop, parameterized by how it
+// re-checks success. The full-video render passes the whole-project render; the
+// per-scene probe passes a probeScene-backed closure (so a frame error is fixed
+// scene-scoped right away, instead of waiting for the final render).
+func (s *Store) repairLoopWith(pid string, client *agent.LLMClient, firstFail types.ExecResult, rerender func() types.ExecResult) types.ExecResult {
 	p, _ := s.Get(pid)
 	messages := []agent.ChatMessage{
 		{Role: "system", Content: "You are a Remotion build-fixer working iteratively, like a coding agent. " +
@@ -281,7 +308,7 @@ func (s *Store) repairLoop(pid string, client *agent.LLMClient, firstFail types.
 			detail = "Rewrote " + strings.Join(edited, ", ")
 		}
 		s.stepRich(p, Step{Phase: "repair", Detail: detail, Kind: "write_file", Path: edited[0], Content: note})
-		r, _ = s.mgr.Backend().Exec(p.SandboxID, "npx --no-install remotion render Video out/video.mp4", "", nil, 1200)
+		r = rerender()
 		ec := r.ExitCode
 		s.stepRich(p, Step{Phase: "repair", Detail: fmt.Sprintf("Re-render exited %d", ec), Kind: "command_output", ExitCode: &ec, Output: r.Stdout + "\n" + r.Stderr})
 		if r.ExitCode == 0 {
@@ -291,6 +318,39 @@ func (s *Store) repairLoop(pid string, client *agent.LLMClient, firstFail types.
 		lastErr = r.Stderr + "\n" + r.Stdout
 	}
 	return r
+}
+
+// pid2sandbox resolves a project's sandbox id (helper for the default rerender).
+func pid2sandbox(s *Store, pid string) string {
+	if p, ok := s.Get(pid); ok {
+		return p.SandboxID
+	}
+	return ""
+}
+
+// repairScene runs a scene-scoped repair: it adapts probeScene to the ExecResult
+// shape repairLoopWith expects (exit 0 when the scene probes clean, exit 1 with
+// the failing frame + stderr), so the model fixes the exact frame failure right
+// away instead of waiting for the final full-video render. Returns true if clean.
+func (s *Store) repairScene(pid string, client *agent.LLMClient, scene *Scene, first ProbeResult) bool {
+	probeAsExec := func() types.ExecResult {
+		r := s.probeScene(pid, *scene)
+		if r.OK {
+			return types.ExecResult{ExitCode: 0}
+		}
+		ff := -1
+		if r.FailedFrame != nil {
+			ff = *r.FailedFrame
+		}
+		return types.ExecResult{ExitCode: 1, Stderr: fmt.Sprintf("frame %d: %s", ff, r.Error)}
+	}
+	ff := -1
+	if first.FailedFrame != nil {
+		ff = *first.FailedFrame
+	}
+	seed := types.ExecResult{ExitCode: 1, Stderr: fmt.Sprintf("frame %d: %s", ff, first.Error)}
+	r := s.repairLoopWith(pid, client, seed, probeAsExec)
+	return r.ExitCode == 0
 }
 
 // trimRepair keeps the repair conversation bounded: system + the last few turns
