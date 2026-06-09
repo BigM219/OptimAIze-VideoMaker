@@ -1,7 +1,8 @@
 // websearch — web search with a configurable provider (Go parity of websearch.ts).
-// Tavily (default) or Exa, selected by WEBSEARCH_PROVIDER + the matching key in
-// env/.env. Without a key it returns an honest "not configured" message instead
-// of failing the loop, so the model can proceed on its existing knowledge.
+// Provider order: an API key (Tavily/Exa) if configured, else a keyless scrape of
+// DuckDuckGo's HTML endpoint. The scrape path means search works out of the box
+// without a key, at the cost of lower reliability (rate-limits, layout drift) — so
+// it fails soft rather than crashing the loop. Set WEBSEARCH_PROVIDER=none to disable.
 package tool
 
 import (
@@ -10,6 +11,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"net/url"
+	"regexp"
 	"strings"
 	"time"
 )
@@ -18,6 +21,7 @@ const (
 	wsDefaultResults = 5
 	wsMaxResults     = 10
 	wsTimeout        = 25 * time.Second
+	wsUA             = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36"
 )
 
 type searchHit struct {
@@ -26,11 +30,19 @@ type searchHit struct {
 	Content string
 }
 
-// resolveProvider picks the active provider + key (Tavily preferred).
+// resolveProvider picks the active provider + key. An explicit WEBSEARCH_PROVIDER
+// wins; otherwise prefer a configured API key (Tavily first), else the keyless
+// DuckDuckGo scrape so search works without any configuration. "none" disables it.
 func resolveProvider() (provider, key string) {
 	explicit := strings.ToLower(readEnv("WEBSEARCH_PROVIDER"))
 	tavily := readEnv("TAVILY_API_KEY")
 	exa := readEnv("EXA_API_KEY")
+	if explicit == "none" {
+		return "none", ""
+	}
+	if explicit == "scrape" {
+		return "scrape", ""
+	}
 	if explicit == "tavily" && tavily != "" {
 		return "tavily", tavily
 	}
@@ -43,7 +55,7 @@ func resolveProvider() (provider, key string) {
 	if exa != "" {
 		return "exa", exa
 	}
-	return "none", ""
+	return "scrape", ""
 }
 
 func searchTavily(ctx context.Context, query string, n int, key string) ([]searchHit, error) {
@@ -108,6 +120,88 @@ func searchExa(ctx context.Context, query string, n int, key string) ([]searchHi
 	return hits, nil
 }
 
+// searchScrape queries DuckDuckGo's HTML endpoint (keyless). It returns static
+// HTML with far less bot-blocking than Google/Bing; still rate-limited and the
+// layout can drift, so the parser is defensive and failures are treated as soft.
+func searchScrape(ctx context.Context, query string, n int) ([]searchHit, error) {
+	form := url.Values{"q": {query}}
+	req, _ := http.NewRequestWithContext(ctx, "POST", "https://html.duckduckgo.com/html/", strings.NewReader(form.Encode()))
+	req.Header.Set("User-Agent", wsUA)
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.Header.Set("Accept", "text/html")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != 200 {
+		return nil, fmt.Errorf("DuckDuckGo HTTP %d", resp.StatusCode)
+	}
+	buf := new(bytes.Buffer)
+	buf.ReadFrom(resp.Body)
+	hits := parseDuckDuckGoHTML(buf.String())
+	if len(hits) > n {
+		hits = hits[:n]
+	}
+	return hits, nil
+}
+
+var (
+	ddgLinkRe    = regexp.MustCompile(`(?is)<a[^>]*class="[^"]*result__a[^"]*"[^>]*href="([^"]+)"[^>]*>(.*?)</a>`)
+	ddgSnippetRe = regexp.MustCompile(`(?is)<a[^>]*class="[^"]*result__snippet[^"]*"[^>]*>(.*?)</a>`)
+	tagRe        = regexp.MustCompile(`<[^>]+>`)
+	wsRe         = regexp.MustCompile(`\s+`)
+	uddgRe       = regexp.MustCompile(`[?&]uddg=([^&]+)`)
+)
+
+func ddgStripTags(s string) string {
+	s = tagRe.ReplaceAllString(s, "")
+	r := strings.NewReplacer(
+		"&nbsp;", " ", "&amp;", "&", "&lt;", "<", "&gt;", ">",
+		"&quot;", `"`, "&#x27;", "'", "&#39;", "'",
+	)
+	s = r.Replace(s)
+	return strings.TrimSpace(wsRe.ReplaceAllString(s, " "))
+}
+
+func decodeDdgURL(href string) string {
+	if m := uddgRe.FindStringSubmatch(href); m != nil {
+		if dec, err := url.QueryUnescape(m[1]); err == nil {
+			return dec
+		}
+		return m[1]
+	}
+	if strings.HasPrefix(href, "//") {
+		return "https:" + href
+	}
+	return href
+}
+
+// parseDuckDuckGoHTML parses the DuckDuckGo HTML result page into hits. Exported-ish
+// (package-visible) so the unit test can verify it against a captured fixture.
+func parseDuckDuckGoHTML(html string) []searchHit {
+	var hits []searchHit
+	links := ddgLinkRe.FindAllStringSubmatchIndex(html, -1)
+	snips := ddgSnippetRe.FindAllStringSubmatchIndex(html, -1)
+	for _, lm := range links {
+		href := html[lm[2]:lm[3]]
+		title := ddgStripTags(html[lm[4]:lm[5]])
+		u := decodeDdgURL(href)
+		if title == "" || !(strings.HasPrefix(u, "http://") || strings.HasPrefix(u, "https://")) {
+			continue
+		}
+		content := ""
+		for _, sm := range snips {
+			if sm[0] > lm[0] { // first snippet appearing after this link
+				content = ddgStripTags(html[sm[2]:sm[3]])
+				break
+			}
+		}
+		hits = append(hits, searchHit{Title: title, URL: u, Content: content})
+	}
+	return hits
+}
+
 // WebSearchTool searches the web for up-to-date information.
 var WebSearchTool = Def{
 	ID: "websearch",
@@ -137,10 +231,9 @@ var WebSearchTool = Def{
 		provider, key := resolveProvider()
 		if provider == "none" {
 			return Result{
-				Title: query,
-				Output: "Web search is not configured. To enable it, set TAVILY_API_KEY (or EXA_API_KEY) in impl/go/.env. " +
-					"Proceed using your existing knowledge.",
-				Metadata: map[string]any{"error": "not_configured"},
+				Title:    query,
+				Output:   "Web search is disabled (WEBSEARCH_PROVIDER=none). Proceed using your existing knowledge.",
+				Metadata: map[string]any{"error": "disabled"},
 			}, nil
 		}
 		n := wsDefaultResults
@@ -154,13 +247,20 @@ var WebSearchTool = Def{
 		defer cancel()
 		var hits []searchHit
 		var err error
-		if provider == "tavily" {
+		switch provider {
+		case "tavily":
 			hits, err = searchTavily(cctx, query, n, key)
-		} else {
+		case "exa":
 			hits, err = searchExa(cctx, query, n, key)
+		default:
+			hits, err = searchScrape(cctx, query, n)
 		}
 		if err != nil {
-			return Result{Title: query, Output: "Web search failed: " + err.Error(), Metadata: map[string]any{"error": "search_failed", "provider": provider}}, nil
+			hint := ""
+			if provider == "scrape" {
+				hint = " (keyless DuckDuckGo scrape — set TAVILY_API_KEY for reliable search)"
+			}
+			return Result{Title: query, Output: "Web search failed: " + err.Error() + hint, Metadata: map[string]any{"error": "search_failed", "provider": provider}}, nil
 		}
 		if len(hits) == 0 {
 			return Result{Title: query, Output: "No search results found. Try a different query.", Metadata: map[string]any{"provider": provider, "results": 0}}, nil
