@@ -49,6 +49,7 @@ type Step struct {
 	Command  string `json:"command,omitempty"`  // command
 	ExitCode *int   `json:"exit_code,omitempty"` // command_output
 	Output   string `json:"output,omitempty"`   // command_output (capped)
+	Frame    *int   `json:"frame,omitempty"`    // probe: which frame this still tested
 }
 
 // stepFieldCap bounds large transcript payloads so the polled JSON stays small.
@@ -68,6 +69,7 @@ type Project struct {
 	Goals      string            `json:"goals"`
 	State      string            `json:"state"`
 	StudioURL  string            `json:"studio_url"`
+	StudioVersion int64          `json:"studio_version"`
 	Storyboard *Storyboard       `json:"storyboard"`
 	ExportPath string            `json:"export_path"`
 	Error      string            `json:"error"`

@@ -9,6 +9,8 @@ import { fileURLToPath } from "node:url";
 import path from "node:path";
 import { getProjectStore } from "./projects.js";
 import { generateConcept, chatEdit } from "./director.js";
+import { buildStudio } from "./studio.js";
+import { probeScene } from "./probe.js";
 import { getSandboxPolicy, policyToWire } from "./policy.js";
 import { skillInfo, skillRule } from "./skills.js";
 import { getModels, setModels, type ModelEntry } from "./models-config.js";
@@ -37,6 +39,7 @@ function projectWire(p: ReturnType<ReturnType<typeof getProjectStore>["get"]>): 
     goals: p.goals,
     state: p.state,
     studio_url: p.studioUrl,
+    studio_version: p.studioVersion,
     storyboard: p.storyboard,
     export_path: p.exportPath,
     error: p.error,
@@ -141,9 +144,48 @@ export function buildApp(webDir: string): Hono {
     return serveFileWithRange(c, abs);
   });
 
-  vm.post("/projects/:id/studio", (c) => {
-    const r = store.launchStudio(c.req.param("id"));
-    return c.json({ ok: true, ...r });
+  // (Re)build our self-written player bundle inside the sandbox; returns a version
+  // token the frontend appends as ?v= to force the iframe to reload.
+  vm.post("/projects/:id/studio", async (c) => {
+    const id = c.req.param("id");
+    const r = await buildStudio(store, id, (phase, detail, extra) => store.logStep(id, phase, detail, extra));
+    if (!r.ok) return c.json({ ok: false, detail: r.error ?? "studio build failed" }, 400);
+    return c.json({ ok: true, url: `/api/v1/vm/projects/${id}/studio/index.html`, version: r.version });
+  });
+
+  // Serve the bundled player site (out/.studio/**) statically. The iframe loads
+  // index.html which pulls bundle.js; both live in the sandbox out/.studio dir.
+  vm.get("/projects/:id/studio/*", (c) => {
+    const id = c.req.param("id");
+    const tail = c.req.path.split(`/projects/${id}/studio/`)[1] || "index.html";
+    // Guard traversal: only allow simple file names within out/.studio.
+    if (tail.includes("..")) return c.json({ detail: "bad path" }, 400);
+    try {
+      const abs = store.rawPath(id, `out/.studio/${tail}`);
+      return serveFileWithRange(c, abs);
+    } catch {
+      return c.json({ detail: "not built yet" }, 404);
+    }
+  });
+
+  // Manual per-scene probe: render sampled frames as stills, report the first
+  // failing frame + stderr (or ok). Updates the scene's status/renderError.
+  vm.post("/projects/:id/scenes/:sceneId/probe", async (c) => {
+    const id = c.req.param("id");
+    const sceneId = c.req.param("sceneId");
+    const p = store.get(id);
+    const scene = p.storyboard?.scenes.find((s) => s.id === sceneId);
+    if (!scene) return c.json({ detail: "scene not found" }, 404);
+    const r = await probeScene(store, id, scene, (phase, detail, extra) => store.logStep(id, phase, detail, extra));
+    if (r.ok) {
+      scene.status = "ready";
+      scene.renderError = undefined;
+    } else {
+      scene.status = "error";
+      scene.renderError = `frame ${r.failedFrame}: ${r.error ?? "render failed"}`;
+    }
+    p.updatedAt = Date.now() / 1000;
+    return c.json({ ok: r.ok, probe: r, project: projectWire(p) });
   });
 
   vm.post("/projects/:id/generate", async (c) => {

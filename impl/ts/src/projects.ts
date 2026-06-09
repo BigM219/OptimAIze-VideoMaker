@@ -22,6 +22,7 @@ export interface ProjectStep {
   command?: string; // command: the shell command
   exitCode?: number; // command_output: process exit code
   output?: string; // command_output: trimmed stdout+stderr (capped)
+  frame?: number; // probe: the frame number a per-frame render check targeted
 }
 
 // Cap large transcript payloads so the polled project JSON stays bounded.
@@ -41,6 +42,9 @@ export interface Project {
   studioUrl: string | null;
   studioPort: number | null;
   studioPid: number | null;
+  // Version token for the self-written player bundle; bumped on each rebuild so
+  // the frontend can bust the iframe cache (?v=<token>).
+  studioVersion: number;
   storyboard: Storyboard | null;
   exportPath: string | null;
   error: string | null;
@@ -114,6 +118,12 @@ export class ProjectStore {
     p.updatedAt = Date.now() / 1000;
   }
 
+  // Public transcript logger (by project id) for modules outside this class
+  // (studio.ts, probe.ts via the API) to append typed steps.
+  logStep(id: string, phase: string, detail: string, extra: Partial<ProjectStep> = {}): void {
+    this.step(this.get(id), phase, detail, extra);
+  }
+
   create(prompt: string, requirements: string, goals: string): Project {
     const now = Date.now() / 1000;
     const p: Project = {
@@ -126,6 +136,7 @@ export class ProjectStore {
       studioUrl: null,
       studioPort: null,
       studioPid: null,
+      studioVersion: 0,
       storyboard: null,
       exportPath: null,
       error: null,

@@ -38,6 +38,14 @@ export interface ProjectStep {
   exit_code?: number;
   exitCode?: number;
   output?: string;
+  frame?: number; // probe steps: which frame this still tested
+}
+export interface ProbeResult {
+  ok: boolean;
+  framesTested: number[];
+  failedFrame?: number;
+  error?: string;
+  lastPng?: string;
 }
 export interface Project {
   id: string;
@@ -47,6 +55,7 @@ export interface Project {
   goals: string;
   state: string;
   studio_url: string | null;
+  studio_version?: number;
   storyboard: Storyboard | null;
   export_path: string | null;
   error: string | null;
@@ -94,8 +103,14 @@ export const api = {
     fetch(`${BASE}/projects/${id}/files/content?path=${encodeURIComponent(path)}`).then((r) => j<{ path: string; content: string }>(r)),
   writeFile: (id: string, path: string, content: string) =>
     fetch(`${BASE}/projects/${id}/files`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ path, content }) }).then((r) => j<FileEntry>(r)),
-  launchStudio: (id: string) =>
-    fetch(`${BASE}/projects/${id}/studio`, { method: "POST" }).then((r) => j<{ ok: boolean; url: string; port: number }>(r)),
+  // (Re)build our self-written player bundle; returns a version token to bust the iframe cache.
+  buildStudio: (id: string) =>
+    fetch(`${BASE}/projects/${id}/studio`, { method: "POST" }).then((r) => j<{ ok: boolean; url: string; version: number }>(r)),
+  // Manually probe one scene's sampled frames; updates its status/renderError.
+  probeScene: (id: string, sceneId: string) =>
+    fetch(`${BASE}/projects/${id}/scenes/${sceneId}/probe`, { method: "POST" }).then((r) =>
+      j<{ ok: boolean; probe: ProbeResult; project: Project }>(r),
+    ),
   generate: (id: string, body: { concept: string; audience?: string; duration_s?: number }) =>
     fetch(`${BASE}/projects/${id}/generate`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) }).then((r) => j<Project>(r)),
   chat: (id: string, message: string, activeFile: string) =>
@@ -110,4 +125,7 @@ export const api = {
   skillRule: (name: string) => fetch(`${BASE}/skills/rule?name=${encodeURIComponent(name)}`).then((r) => j<{ name: string; content: string }>(r)),
   rawUrl: (id: string, path: string) => `${BASE}/projects/${id}/files/raw?path=${encodeURIComponent(path)}&t=${Date.now()}`,
   exportRawUrl: (id: string) => `${BASE}/projects/${id}/export/raw?t=${Date.now()}`,
+  // URL of our self-written player bundle, deep-linked to a scene + version-busted.
+  studioFrameUrl: (id: string, sceneId: string, version: number) =>
+    `${BASE}/projects/${id}/studio/index.html?scene=${encodeURIComponent(sceneId)}&v=${version}`,
 };

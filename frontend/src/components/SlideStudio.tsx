@@ -1,12 +1,11 @@
 import { useEffect, useMemo, useState } from "react";
-import type { Scene, Storyboard } from "../lib/api";
+import { api, type Scene, type Storyboard, type Project } from "../lib/api";
 
-// A slide deck on top of Remotion Studio. Each storyboard scene is its own
-// Remotion <Composition>, so Studio renders it live from code (hot-reload) —
-// the slide IS the code, there is no per-scene mp4. Clicking a slide deep-links
-// the Studio iframe to that composition (`{studioUrl}/{SceneId}`); the slide
-// becomes reviewable the moment its code is written. Status (pending / writing
-// / ready / error) updates live as the director works through the storyboard.
+// Self-written studio. Each storyboard scene is its own Remotion <Composition>;
+// the backend bundles a @remotion/player site INSIDE the sandbox and serves it,
+// and this iframe deep-links to a scene in that bundle (NOT remotion studio).
+// Per-frame probing runs server-side after each scene (and on demand via the
+// "Probe lại" button); a failing scene shows WHICH frame broke + the stderr.
 
 function statusOf(s: Scene): NonNullable<Scene["status"]> {
   return s.status ?? "pending";
@@ -22,15 +21,7 @@ const LABEL: Record<string, string> = {
   error: "lỗi",
 };
 
-function SlideThumb({
-  scene,
-  active,
-  onClick,
-}: {
-  scene: Scene;
-  active: boolean;
-  onClick: () => void;
-}) {
+function SlideThumb({ scene, active, onClick }: { scene: Scene; active: boolean; onClick: () => void }) {
   const st = statusOf(scene);
   return (
     <button className={`ss-thumb ss-thumb--${st}${active ? " active" : ""}`} onClick={onClick}>
@@ -41,22 +32,23 @@ function SlideThumb({
 }
 
 export function SlideStudio({
+  project,
   storyboard,
-  studioUrl,
-  onLaunchStudio,
-  launching,
+  onProjectUpdate,
 }: {
+  project: Project;
   storyboard: Storyboard | null;
-  studioUrl: string | null;
-  onLaunchStudio: () => void;
-  launching: boolean;
+  onProjectUpdate: (p: Project) => void;
 }) {
   const scenes = storyboard?.scenes ?? [];
   const [selected, setSelected] = useState<string | null>(null);
   const [following, setFollowing] = useState(true);
+  const [probing, setProbing] = useState(false);
 
-  // Auto-follow the scene the director is actively writing, until the user
-  // manually picks a slide to review.
+  const version = project.studio_version ?? 0;
+
+  // Auto-follow the scene the director is actively writing, until the user picks
+  // a slide to review.
   const activeIdx = useMemo(() => {
     const writing = scenes.findIndex((s) => statusOf(s) === "writing");
     if (writing >= 0) return writing;
@@ -71,7 +63,7 @@ export function SlideStudio({
   if (scenes.length === 0) {
     return (
       <div className="ss-empty muted pad vm-center">
-        Slide deck sẽ hiện ở đây — mỗi cảnh là một composition, xem trực tiếp trong Studio ngay khi code được viết.
+        Slide deck sẽ hiện ở đây — mỗi cảnh là một composition, dựng bằng player tự viết ngay khi code được viết.
       </div>
     );
   }
@@ -79,8 +71,22 @@ export function SlideStudio({
   const current = scenes.find((s) => s.id === selected) ?? scenes[activeIdx];
   const st = current ? statusOf(current) : "pending";
   const readyCount = scenes.filter((s) => statusOf(s) === "ready").length;
-  // Deep-link the Studio iframe straight to the selected composition.
-  const frameSrc = studioUrl && current ? `${studioUrl}/${current.id}` : "";
+  // Our own player bundle, deep-linked to the selected scene + version-busted so
+  // the iframe reloads after each rebuild.
+  const frameSrc = current && version > 0 ? api.studioFrameUrl(project.id, current.id, version) : "";
+
+  const reprobe = async () => {
+    if (!current || probing) return;
+    setProbing(true);
+    try {
+      const r = await api.probeScene(project.id, current.id);
+      onProjectUpdate(r.project);
+    } catch {
+      /* ignore — transcript shows the error */
+    } finally {
+      setProbing(false);
+    }
+  };
 
   return (
     <div className="ss-root">
@@ -107,6 +113,9 @@ export function SlideStudio({
             <span className={`ss-badge ss-badge--${st}`}>{LABEL[st] ?? st}</span>
             <span className="muted small ss-frames">{current.durationInFrames}f</span>
             <div className="spacer" style={{ flex: 1 }} />
+            <button className="ghost-action vm-mini" onClick={reprobe} disabled={probing || st === "writing" || st === "pending"}>
+              {probing ? "Đang probe…" : "Probe lại cảnh này"}
+            </button>
             {!following && (
               <button className="ghost-action vm-mini" onClick={() => setFollowing(true)}>
                 Theo dõi cảnh đang viết
@@ -115,14 +124,7 @@ export function SlideStudio({
           </div>
 
           <div className="ss-stage">
-            {!studioUrl ? (
-              <div className="ss-stage-msg">
-                <p>Studio chưa chạy.</p>
-                <button className="primary-action vm-mini" onClick={onLaunchStudio} disabled={launching}>
-                  {launching ? "Đang mở Studio…" : "Mở Studio để xem slide"}
-                </button>
-              </div>
-            ) : st === "pending" ? (
+            {st === "pending" ? (
               <div className="ss-stage-msg muted">
                 <div className="ss-spin-icon">○</div>
                 <p>Chờ tới lượt cảnh này.</p>
@@ -132,15 +134,20 @@ export function SlideStudio({
                 <div className="ss-spinner" />
                 <p>Đang viết code cảnh này… slide sẽ hiện ngay khi xong.</p>
               </div>
+            ) : version === 0 ? (
+              <div className="ss-stage-msg muted">
+                <div className="ss-spinner" />
+                <p>Đang dựng player…</p>
+              </div>
             ) : (
-              // ready or error: show the live composition. A broken scene still
-              // renders in Studio (with its error overlay); repair fixes it in
-              // place and the iframe hot-reloads.
+              // ready or error: show the live player. A scene flagged "error"
+              // still has a file; the player shows it (it may throw at the broken
+              // frame), and the overlay names the exact failing frame.
               <>
-                <iframe key={current.id} title={current.id} src={frameSrc} className="ss-frame" />
+                <iframe key={`${current.id}:${version}`} title={current.id} src={frameSrc} className="ss-frame" />
                 {st === "error" && renderErrorOf(current) && (
-                  <details className="ss-error-strip">
-                    <summary>Cảnh này có lỗi build — đang được sửa dần</summary>
+                  <details className="ss-error-strip" open>
+                    <summary>Cảnh này lỗi render — {renderErrorOf(current)?.split("\n")[0]}</summary>
                     <pre className="ss-error-log">{renderErrorOf(current)}</pre>
                   </details>
                 )}

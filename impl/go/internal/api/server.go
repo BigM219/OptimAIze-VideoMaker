@@ -4,6 +4,7 @@ package api
 
 import (
 	"encoding/json"
+	"fmt"
 	"io"
 	"mime"
 	"net/http"
@@ -52,6 +53,8 @@ var (
 	reContent = regexp.MustCompile(`^/api/v1/vm/projects/([^/]+)/files/content$`)
 	reRaw     = regexp.MustCompile(`^/api/v1/vm/projects/([^/]+)/files/raw$`)
 	reStudio  = regexp.MustCompile(`^/api/v1/vm/projects/([^/]+)/studio$`)
+	reStudioF = regexp.MustCompile(`^/api/v1/vm/projects/([^/]+)/studio/(.+)$`)
+	reProbe   = regexp.MustCompile(`^/api/v1/vm/projects/([^/]+)/scenes/([^/]+)/probe$`)
 	reGen     = regexp.MustCompile(`^/api/v1/vm/projects/([^/]+)/generate$`)
 	reChat    = regexp.MustCompile(`^/api/v1/vm/projects/([^/]+)/chat$`)
 	reExport  = regexp.MustCompile(`^/api/v1/vm/projects/([^/]+)/export$`)
@@ -163,14 +166,48 @@ func (s *Server) route(w http.ResponseWriter, r *http.Request) {
 		}
 		proj, _ := s.store.Get(id)
 		writeJSON(w, 200, map[string]any{"ok": true, "note": note, "edited": edited, "project": proj})
-	case reStudio.MatchString(p) && r.Method == "POST":
-		id := reStudio.FindStringSubmatch(p)[1]
-		url, port, err := s.store.LaunchStudio(id)
-		if err != nil {
-			writeJSON(w, 404, map[string]string{"detail": err.Error()})
+	case reStudioF.MatchString(p) && r.Method == "GET":
+		// Serve the self-written player bundle (out/.studio/**) statically.
+		m := reStudioF.FindStringSubmatch(p)
+		id, tail := m[1], m[2]
+		if strings.Contains(tail, "..") {
+			writeJSON(w, 400, map[string]string{"detail": "bad path"})
 			return
 		}
-		writeJSON(w, 200, map[string]any{"ok": true, "url": url, "port": port})
+		abs, err := s.store.RawPath(id, "out/.studio/"+tail)
+		if err != nil {
+			writeJSON(w, 404, map[string]string{"detail": "not built yet"})
+			return
+		}
+		serveRange(w, r, abs)
+	case reStudio.MatchString(p) && r.Method == "POST":
+		// (Re)build our self-written player bundle; returns a version token.
+		id := reStudio.FindStringSubmatch(p)[1]
+		b, err := s.store.BuildStudio(id)
+		if err != nil || !b.OK {
+			detail := b.Error
+			if err != nil {
+				detail = err.Error()
+			}
+			writeJSON(w, 400, map[string]string{"detail": detail})
+			return
+		}
+		writeJSON(w, 200, map[string]any{"ok": true, "url": fmt.Sprintf("/api/v1/vm/projects/%s/studio/index.html", id), "version": b.Version})
+	case reProbe.MatchString(p) && r.Method == "POST":
+		// Manual per-scene probe: render sampled frames, report first failing frame.
+		m := reProbe.FindStringSubmatch(p)
+		id, sceneID := m[1], m[2]
+		proj, ok := s.store.Get(id)
+		if !ok || proj.Storyboard == nil {
+			writeJSON(w, 404, map[string]string{"detail": "scene not found"})
+			return
+		}
+		res := s.store.ProbeSceneManual(id, sceneID)
+		if res == nil {
+			writeJSON(w, 404, map[string]string{"detail": "scene not found"})
+			return
+		}
+		writeJSON(w, 200, map[string]any{"ok": res.OK, "probe": res, "project": proj})
 	case reContent.MatchString(p) && r.Method == "GET":
 		id := reContent.FindStringSubmatch(p)[1]
 		path := r.URL.Query().Get("path")
