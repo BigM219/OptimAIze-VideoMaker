@@ -24,7 +24,7 @@ var ReadTool = Def{
 		if err != nil {
 			return nil, err
 		}
-		norm, err := assertProjectPath(fp)
+		norm, err := assertReadablePath(fp)
 		if err != nil {
 			return nil, err
 		}

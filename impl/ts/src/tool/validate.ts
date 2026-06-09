@@ -36,20 +36,35 @@ export function optBool(args: Record<string, unknown>, key: string): boolean | u
   throw new ToolValidationError(`"${key}" must be a boolean.`);
 }
 
-// Every file path a tool touches must stay under src/ (or another writable
-// project dir). The jail enforces this too, but checking here gives the model a
-// clear message instead of an opaque jail rejection.
+// Writes are restricted to the project's writable subtrees, so the model can't
+// clobber config/lockfiles. The jail enforces this too, but checking here gives
+// the model a clear message instead of an opaque jail rejection.
 const WRITABLE_PREFIXES = ["src/", "public/", "out/"];
 
-export function assertProjectPath(p: string): string {
+// Normalize a relative path and reject escapes (absolute or "..") shared by both
+// the read and write checks.
+function normalizeRel(p: string): string {
   const norm = p.replace(/\\/g, "/").replace(/^\.\//, "");
   if (norm.startsWith("/") || norm.includes("..")) {
     throw new ToolValidationError(`Path "${p}" must be relative to the project root with no "..".`);
   }
+  return norm;
+}
+
+// For write/edit: must land in a writable subtree.
+export function assertProjectPath(p: string): string {
+  const norm = normalizeRel(p);
   if (!WRITABLE_PREFIXES.some((pre) => norm.startsWith(pre))) {
     throw new ToolValidationError(
       `Path "${p}" must be under one of: ${WRITABLE_PREFIXES.join(", ")}.`,
     );
   }
   return norm;
+}
+
+// For read/list: any path inside the project is fair game (package.json,
+// tsconfig.json, etc.) so the agent can understand the project — it just can't
+// escape the root. The jail still bounds it to the sandbox workdir.
+export function assertReadablePath(p: string): string {
+  return normalizeRel(p);
 }
